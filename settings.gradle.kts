@@ -16,3 +16,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "vcamgd"
 include(":app")
+include(":xposed")
+include(":xposed-api-stub")

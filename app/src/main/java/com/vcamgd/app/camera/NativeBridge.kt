@@ -9,10 +9,11 @@ import java.io.File
 import java.io.InputStreamReader
 
 /**
- * Ponte com o modulo Magisk/Zygisk.
+ * Ponte com o modulo Magisk/Zygisk + arquivo de video compartilhado para o hook LSPosed.
  *
- * Controle: /data/adb/vcamgd/control.json (via su)
- * Status:   /data/adb/vcamgd/status.json  (Zygisk)
+ * Controle: /data/adb/vcamgd/control.json
+ * Video:    /data/adb/vcamgd/current.mp4
+ * Status:   /data/adb/vcamgd/status.json
  * Marcador: /data/adb/modules/vcamgd/module.prop
  */
 object NativeBridge {
@@ -20,23 +21,34 @@ object NativeBridge {
     private const val MODULE_PROP = "/data/adb/modules/vcamgd/module.prop"
     private const val CONTROL_PATH = "/data/adb/vcamgd/control.json"
     private const val STATUS_PATH = "/data/adb/vcamgd/status.json"
+    private const val VIDEO_PATH = "/data/adb/vcamgd/current.mp4"
 
-    fun isModulePresent(): Boolean {
-        return fileExistsAsRoot(MODULE_PROP)
-    }
+    fun isModulePresent(): Boolean = fileExistsAsRoot(MODULE_PROP)
 
     fun readModuleStatus(): String {
         val raw = readFileAsRoot(STATUS_PATH)
-        return if (raw.isNullOrBlank()) "Sem eventos do Zygisk ainda" else raw.trim()
+        return if (raw.isNullOrBlank()) "Sem eventos do Zygisk/LSPosed ainda" else raw.trim()
     }
 
     fun setLocalVideoSource(context: Context, uri: Uri): Boolean {
         persist(context, "local", uri = uri.toString())
-        return writeControl(enabled = true, virtual = true, source = "local", uri = uri.toString(), url = "")
+        val staged = stageLocalVideo(context, uri)
+        if (!staged) {
+            Log.e(TAG, "Failed to stage local video")
+            return false
+        }
+        return writeControl(
+            enabled = true,
+            virtual = true,
+            source = "local",
+            uri = VIDEO_PATH,
+            url = "",
+        )
     }
 
     fun setNetworkSource(context: Context, url: String): Boolean {
         persist(context, "network", url = url)
+        // Network decode ainda nao esta no feeder; grava URL para proxima iteracao.
         return writeControl(enabled = true, virtual = true, source = "network", uri = "", url = url)
     }
 
@@ -67,6 +79,26 @@ object NativeBridge {
             .putBoolean("virtual", true)
             .apply()
         patchControlVirtual(true)
+    }
+
+    private fun stageLocalVideo(context: Context, uri: Uri): Boolean {
+        return try {
+            val cache = File(context.cacheDir, "vcam_input.mp4")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                cache.outputStream().use { output -> input.copyTo(output) }
+            } ?: return false
+            val ok = shellSu(
+                "mkdir -p /data/adb/vcamgd; " +
+                    "cp '${cache.absolutePath}' '$VIDEO_PATH'; " +
+                    "chmod 666 '$VIDEO_PATH'; " +
+                    "ls -l '$VIDEO_PATH'; echo OK",
+            ).contains("OK")
+            Log.i(TAG, "stageLocalVideo size=${cache.length()} ok=$ok")
+            ok
+        } catch (e: Exception) {
+            Log.e(TAG, "stageLocalVideo", e)
+            false
+        }
     }
 
     private fun persist(

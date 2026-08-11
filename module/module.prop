@@ -1,6 +1,6 @@
 id=vcamgd
 name=VCamGD Virtual Camera
-version=v0.2.0
-versionCode=2
+version=v0.3.0
+versionCode=3
 author=vcamgd
-description=Zygisk module for VCamGD virtual camera control/IPC. Frame injection hooks are staged for next iteration.
+description=Zygisk IPC for VCamGD. Pair with LSPosed module (com.vcamgd.xposed) for Camera2 surface injection.
