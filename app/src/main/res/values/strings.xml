@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VCamGD</string>
+    <string name="tab_home">Inicio</string>
+    <string name="tab_control">Controle</string>
+    <string name="tab_status">Status</string>
+    <string name="home_subtitle">Camera virtual com fonte local, rede ou USB</string>
+    <string name="video_source">Fonte de video</string>
+    <string name="source_local">Arquivo</string>
+    <string name="source_network">Rede</string>
+    <string name="source_usb">USB</string>
+    <string name="no_video_selected">Nenhum video selecionado</string>
+    <string name="select_video">Selecionar video</string>
+    <string name="network_url_hint">URL RTSP / RTMP</string>
+    <string name="usb_hint">Transferencia USB de baixa latencia (requer host no PC).</string>
+    <string name="enable_virtual_camera">Ativar camera virtual</string>
+    <string name="status_virtual_camera_disabled">Camera virtual desativada</string>
+    <string name="activation">Ativacao</string>
+    <string name="not_activated">Status: nao ativado</string>
+    <string name="activated">Status: ativado</string>
+    <string name="activation_code">Codigo / cartao</string>
+    <string name="activate">Ativar</string>
+    <string name="floating_window">Janela flutuante</string>
+    <string name="floating_window_desc">Atalhos para trocar camera real/virtual</string>
+    <string name="switch_to_virtual_camera">Usar camera virtual</string>
+    <string name="switch_to_real_camera">Usar camera real</string>
+    <string name="using_real_camera">Atual: camera real</string>
+    <string name="using_virtual_camera">Atual: camera virtual</string>
+    <string name="refresh">Atualizar</string>
+    <string name="eula_title">Aviso legal</string>
+    <string name="eula_checkbox">Li e concordo com o aviso</string>
+    <string name="eula_continue">Continuar</string>
+    <string name="eula_content">Este aplicativo e destinado a estudo, pesquisa e desenvolvimento. E proibido o uso para fraude, falsidade ideologica ou qualquer atividade ilegal.\n\nO app exige permissao root. Root pode reduzir a seguranca do dispositivo e anular garantia. Voce assume todos os riscos.</string>
+    <string name="overlay_channel_name">Controles flutuantes</string>
+    <string name="overlay_channel_desc">Janela flutuante de controle da camera virtual</string>
+    <string name="overlay_notification_title">VCamGD</string>
+    <string name="overlay_notification_text">Controles em execucao</string>
+    <string name="root_required_title">Root necessario</string>
+    <string name="root_required_message">Este app precisa de root para injetar a camera virtual no sistema.</string>
+</resources>

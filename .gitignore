@@ -1,0 +1,30 @@
+﻿# APK e artefatos
+*.apk
+*.aab
+*.dex
+*.so
+!module/**/*.so
+
+# Descompilacao / referencia local
+/decompiled/
+/apk-extracted/
+/apktool-out/
+/.jadx/
+hs_err_pid*.log
+vcama16.apk
+
+# Ferramentas locais
+/tools/
+
+# Build / IDE
+/.gradle/
+/.idea/
+/*.iml
+/local.properties
+/build/
+**/build/
+.DS_Store
+Thumbs.db
+node_modules/
+captures/
+*.log

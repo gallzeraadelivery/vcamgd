@@ -1,0 +1,6 @@
+id=vcamgd
+name=VCamGD Virtual Camera
+version=v0.1.0
+versionCode=1
+author=vcamgd
+description=Stub do módulo Magisk para injeção de câmera virtual. Integração nativa pendente.
