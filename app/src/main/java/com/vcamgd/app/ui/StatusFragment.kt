@@ -28,15 +28,13 @@ class StatusFragment : Fragment() {
         vm.uiState.observe(viewLifecycleOwner) { state ->
             binding.rootStatus.text = "Root\n${state.root.detail}"
             binding.moduleStatus.text = "Modulo\n" + if (state.camera.moduleInstalled) {
-                "Instalado"
+                "Instalado (Zygisk)"
             } else {
                 "Nao encontrado em /data/adb/modules/vcamgd"
             }
             binding.cameraStatus.text = "Camera virtual\n${state.camera.message}"
-            binding.activationStatus.text = "Ativacao\n" + if (state.prefs.activated) {
-                "Ativado"
-            } else {
-                "Nao ativado"
+            binding.activationStatus.text = "Zygisk\n" + state.camera.zygiskEvent.ifBlank {
+                if (state.prefs.activated) "Ativado" else "Nao ativado"
             }
             binding.appVersion.text =
                 "App\nVCamGD ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"

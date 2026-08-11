@@ -3,6 +3,7 @@
 *.aab
 *.dex
 *.so
+!module/zygisk/*.so
 !module/**/*.so
 
 # Descompilacao / referencia local
@@ -16,6 +17,13 @@ vcama16.apk
 # Ferramentas locais
 /tools/
 
+# NDK intermediarios
+/module/libs/
+/module/obj/
+/module/jni/libs/
+
+# Dist (gerado; pode regenerar com scripts/pack-module.ps1)
+/dist/
 # Build / IDE
 /.gradle/
 /.idea/

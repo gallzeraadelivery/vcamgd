@@ -17,30 +17,26 @@ enum class VirtualCameraState {
 
 data class VirtualCameraStatus(
     val state: VirtualCameraState = VirtualCameraState.DISABLED,
-    val message: String = "Câmera virtual desativada",
+    val message: String = "Camera virtual desativada",
     val usingRealCamera: Boolean = true,
     val moduleInstalled: Boolean = false,
+    val zygiskEvent: String = "",
 )
 
-/**
- * Controlador da câmera virtual.
- *
- * O OVCAM original injeta frames via camada nativa (bootstrap + payload criptografado)
- * e exige root/módulo. Aqui a API pública já está pronta; a implementação nativa
- * será plugada em [NativeBridge] / módulo Magisk.
- */
 class VirtualCameraController(private val context: Context) {
     private val _status = MutableStateFlow(VirtualCameraStatus())
     val status: StateFlow<VirtualCameraStatus> = _status.asStateFlow()
 
     suspend fun refreshModuleStatus() {
-        val installed = NativeBridge.isModulePresent(context)
+        val installed = NativeBridge.isModulePresent()
+        val event = if (installed) NativeBridge.readModuleStatus() else ""
         _status.value = _status.value.copy(
             moduleInstalled = installed,
-            message = if (installed) {
-                "Módulo detectado"
-            } else {
-                "Módulo de câmera virtual não instalado"
+            zygiskEvent = event,
+            message = when {
+                !installed -> "Modulo de camera virtual nao instalado"
+                _status.value.state == VirtualCameraState.ENABLED -> "Camera virtual ativa"
+                else -> "Modulo Zygisk detectado"
             },
         )
     }
@@ -52,24 +48,20 @@ class VirtualCameraController(private val context: Context) {
     ): Result<Unit> {
         _status.value = _status.value.copy(
             state = VirtualCameraState.ENABLING,
-            message = "Ativando câmera virtual…",
+            message = "Ativando camera virtual...",
         )
-        delay(400)
+        delay(200)
 
-        if (!NativeBridge.isModulePresent(context)) {
-            val error = "Instale o módulo Magisk/LSPosed do VCamGD para ativar a câmera virtual"
-            _status.value = _status.value.copy(
-                state = VirtualCameraState.ERROR,
-                message = error,
-                usingRealCamera = true,
-            )
+        if (!NativeBridge.isModulePresent()) {
+            val error = "Instale o modulo Magisk VCamGD (Zygisk) e reinicie"
+            fail(error)
             return Result.failure(IllegalStateException(error))
         }
 
         val configured = when (sourceType) {
             VideoSourceType.LOCAL_FILE -> {
                 if (localUri == null) {
-                    fail("Selecione um arquivo de vídeo")
+                    fail("Selecione um arquivo de video")
                     return Result.failure(IllegalArgumentException("missing local video"))
                 }
                 NativeBridge.setLocalVideoSource(context, localUri)
@@ -87,25 +79,27 @@ class VirtualCameraController(private val context: Context) {
         return if (configured) {
             _status.value = VirtualCameraStatus(
                 state = VirtualCameraState.ENABLED,
-                message = "Câmera virtual ativa",
+                message = "Camera virtual ativa (controle enviado ao Zygisk)",
                 usingRealCamera = false,
                 moduleInstalled = true,
+                zygiskEvent = NativeBridge.readModuleStatus(),
             )
             Result.success(Unit)
         } else {
-            fail("Falha ao configurar fonte de vídeo")
+            fail("Falha ao escrever controle em /data/adb/vcamgd (precisa de root)")
             Result.failure(IllegalStateException("native configure failed"))
         }
     }
 
     suspend fun disable(): Result<Unit> {
-        delay(200)
+        delay(100)
         NativeBridge.disable(context)
         _status.value = VirtualCameraStatus(
             state = VirtualCameraState.DISABLED,
-            message = "Usando câmera padrão do sistema",
+            message = "Usando camera padrao do sistema",
             usingRealCamera = true,
-            moduleInstalled = NativeBridge.isModulePresent(context),
+            moduleInstalled = NativeBridge.isModulePresent(),
+            zygiskEvent = NativeBridge.readModuleStatus(),
         )
         return Result.success(Unit)
     }
@@ -114,7 +108,7 @@ class VirtualCameraController(private val context: Context) {
         NativeBridge.switchToReal(context)
         _status.value = _status.value.copy(
             usingRealCamera = true,
-            message = "Trocado para câmera real",
+            message = "Trocado para camera real",
         )
     }
 
@@ -122,7 +116,7 @@ class VirtualCameraController(private val context: Context) {
         NativeBridge.switchToVirtual(context)
         _status.value = _status.value.copy(
             usingRealCamera = false,
-            message = "Trocado para câmera virtual",
+            message = "Trocado para camera virtual",
             state = VirtualCameraState.ENABLED,
         )
     }
@@ -133,70 +127,5 @@ class VirtualCameraController(private val context: Context) {
             message = message,
             usingRealCamera = true,
         )
-    }
-}
-
-/**
- * Ponte para o módulo nativo.
- * Stub seguro: detecta marcador do módulo e ainda não injeta frames.
- */
-object NativeBridge {
-    private const val MODULE_MARKER = "/data/adb/modules/vcamgd/module.prop"
-    private const val LEGACY_MARKER = "/data/local/tmp/vcamgd.ready"
-
-    fun isModulePresent(context: Context): Boolean {
-        return try {
-            java.io.File(MODULE_MARKER).exists() || java.io.File(LEGACY_MARKER).exists()
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    fun setLocalVideoSource(context: Context, uri: Uri): Boolean {
-        // TODO: enviar FD/path para o módulo nativo
-        context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
-            .edit()
-            .putString("source", "local")
-            .putString("uri", uri.toString())
-            .apply()
-        return isModulePresent(context)
-    }
-
-    fun setNetworkSource(context: Context, url: String): Boolean {
-        context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
-            .edit()
-            .putString("source", "network")
-            .putString("url", url)
-            .apply()
-        return isModulePresent(context)
-    }
-
-    fun setUsbSource(context: Context): Boolean {
-        context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
-            .edit()
-            .putString("source", "usb")
-            .apply()
-        return isModulePresent(context)
-    }
-
-    fun disable(context: Context) {
-        context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean("enabled", false)
-            .apply()
-    }
-
-    fun switchToReal(context: Context) {
-        context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean("virtual", false)
-            .apply()
-    }
-
-    fun switchToVirtual(context: Context) {
-        context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean("virtual", true)
-            .apply()
     }
 }

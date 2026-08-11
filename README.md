@@ -1,25 +1,23 @@
 # VCamGD
 
-App Android de **camera virtual** inspirado no OVCAM (`com.vcamor.vv`), em Kotlin + Material 3 (Views).
+App Android de **camera virtual** inspirado no OVCAM (`com.vcamor.vv`), em Kotlin + Material 3 (Views), com modulo **Magisk Zygisk**.
 
 Repositorio: https://github.com/gallzeraadelivery/vcamgd
 
 ## O que ja existe
 
-- Telas: **Inicio / Controle / Status** + aviso legal
-- Fontes: arquivo local, RTSP/RTMP, USB (configuracao na UI)
-- `OverlayService` com janela flutuante
+- Telas: Inicio / Controle / Status + aviso legal
+- Fontes: arquivo local, RTSP/RTMP, USB (config na UI)
+- Overlay flutuante
 - Checagem de root
-- Stub do controlador nativo + esqueleto Magisk (`module/`)
-- Persistencia com DataStore
+- Modulo Zygisk (`module/`) com IPC em `/data/adb/vcamgd/`
+- Script de pack: `scripts/pack-module.ps1`
 
 ## Limite atual
 
-A injecao real da camera (HAL / Zygisk / hook Camera2) ainda e **stub**. Sem o modulo em `/data/adb/modules/vcamgd`, a UI informa que o modulo nao foi encontrado.
+O Zygisk **carrega e recebe o controle** do app. A **injecao de frames** na Camera2/HAL ainda e o proximo passo (hooks PLT/JNI).
 
-## Build
-
-Requisitos: JDK 17+, Android SDK (API 36).
+## Build do app
 
 ```bat
 gradlew.bat :app:assembleDebug
@@ -27,13 +25,15 @@ gradlew.bat :app:assembleDebug
 
 APK: `app/build/outputs/apk/debug/app-debug.apk`
 
-## Estrutura
+## Build do modulo Magisk
 
+```bat
+powershell -ExecutionPolicy Bypass -File scripts\pack-module.ps1
 ```
-app/          # aplicativo Android
-module/       # stub Magisk
-decompiled/   # analise do APK de referencia (local, gitignored)
-```
+
+ZIP: `dist/vcamgd-magisk-zygisk.zip`
+
+Instale no Magisk, ative **Zygisk**, reinicie.
 
 ## Uso responsavel
 
