@@ -37,7 +37,7 @@ class StatusFragment : Fragment() {
                 if (state.prefs.activated) "Ativado" else "Nao ativado"
             }
             binding.appVersion.text =
-                "App\nVCamGD ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+                "App\nKingVCam ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
         }
     }
 

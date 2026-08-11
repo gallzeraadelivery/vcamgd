@@ -85,7 +85,7 @@ class VirtualCameraController(private val context: Context) {
             )
             Result.success(Unit)
         } else {
-            fail("Falha ao gravar controle (conceda root ao VCamGD)")
+            fail("Falha ao gravar controle (conceda root ao KingVCam)")
             Result.failure(IllegalStateException("native configure failed"))
         }
     }

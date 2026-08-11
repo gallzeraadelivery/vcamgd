@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">VCamGD</string>
+    <string name="app_name">KingVCam</string>
     <string name="tab_home">Inicio</string>
     <string name="tab_control">Controle</string>
     <string name="tab_status">Status</string>
@@ -34,7 +34,7 @@
     <string name="eula_content">Este aplicativo e destinado a estudo, pesquisa e desenvolvimento. E proibido o uso para fraude, falsidade ideologica ou qualquer atividade ilegal.\n\nO app exige permissao root. Root pode reduzir a seguranca do dispositivo e anular garantia. Voce assume todos os riscos.</string>
     <string name="overlay_channel_name">Controles flutuantes</string>
     <string name="overlay_channel_desc">Janela flutuante de controle da camera virtual</string>
-    <string name="overlay_notification_title">VCamGD</string>
+    <string name="overlay_notification_title">KingVCam</string>
     <string name="overlay_notification_text">Controles em execucao</string>
     <string name="root_required_title">Root necessario</string>
     <string name="root_required_message">Este app precisa de root para injetar a camera virtual no sistema.</string>
