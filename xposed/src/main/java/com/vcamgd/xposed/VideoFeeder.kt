@@ -9,14 +9,17 @@ import java.io.File
 import java.util.Locale
 
 /**
- * Alimenta Surfaces com arquivo local ou stream de rede (RTSP/HTTP).
- * RTMP: tenta MediaPlayer; na falha oriente a republicar como RTSP.
+ * IPC em /data/local/tmp/vcamgd (acessivel aos apps; /data/adb costuma ser bloqueado por SELinux).
  */
 object VideoFeeder {
     private const val TAG = "VCamGD-Feeder"
-    private const val CONTROL = "/data/adb/vcamgd/control.json"
-    private const val VIDEO_PATH = "/data/adb/vcamgd/current.mp4"
-    private const val STATUS = "/data/adb/vcamgd/status.json"
+    const val CONTROL_DIR = "/data/local/tmp/vcamgd"
+    private const val CONTROL = "$CONTROL_DIR/control.json"
+    private const val VIDEO_PATH = "$CONTROL_DIR/current.mp4"
+    private const val STATUS = "$CONTROL_DIR/status.json"
+    // Fallback legado (Magisk)
+    private const val LEGACY_CONTROL = "/data/adb/vcamgd/control.json"
+    private const val LEGACY_VIDEO = "/data/adb/vcamgd/current.mp4"
 
     @Volatile private var player: MediaPlayer? = null
     @Volatile private var dummyTextures: MutableList<SurfaceTexture> = mutableListOf()
@@ -36,10 +39,9 @@ object VideoFeeder {
     }
 
     fun readControl(): Control? {
+        val text = readFirstExisting(CONTROL, LEGACY_CONTROL) ?: return null
         return try {
-            val f = File(CONTROL)
-            if (!f.exists()) return null
-            val json = JSONObject(f.readText())
+            val json = JSONObject(text)
             Control(
                 enabled = json.optBoolean("enabled", false),
                 virtual = json.optBoolean("virtual", true),
@@ -72,24 +74,21 @@ object VideoFeeder {
                 return PlaySource.NetworkUrl(url, looping = isHttpProgressive(url))
             }
             "usb" -> {
-                val file = File(VIDEO_PATH)
-                return if (file.exists() && file.length() > 0) PlaySource.FilePath(file.absolutePath) else null
+                val path = firstExistingFile(VIDEO_PATH, LEGACY_VIDEO) ?: return null
+                return PlaySource.FilePath(path)
             }
             else -> {
-                val file = File(VIDEO_PATH)
-                if (file.exists() && file.length() > 0) {
-                    return PlaySource.FilePath(file.absolutePath)
-                }
+                val path = firstExistingFile(VIDEO_PATH, LEGACY_VIDEO)
+                if (path != null) return PlaySource.FilePath(path)
                 if (c.uri.startsWith("/")) {
                     val direct = File(c.uri)
-                    if (direct.exists()) return PlaySource.FilePath(direct.absolutePath)
+                    if (direct.exists() && direct.canRead()) return PlaySource.FilePath(direct.absolutePath)
                 }
                 return null
             }
         }
     }
 
-    /** Compat: retorna path local se houver. */
     fun resolveVideoPath(): String? {
         return when (val src = resolvePlaySource()) {
             is PlaySource.FilePath -> src.path
@@ -103,7 +102,7 @@ object VideoFeeder {
         val source = resolvePlaySource()
         if (source == null) {
             writeStatus("no_playable_source")
-            Log.e(TAG, "No playable source in control.json")
+            Log.e(TAG, "No playable source")
             return
         }
         stop()
@@ -135,7 +134,7 @@ object VideoFeeder {
                 }
             }
             mp.setOnErrorListener { _, what, extra ->
-                Log.e(TAG, "MediaPlayer error what=$what extra=$extra source=${describe(source)}")
+                Log.e(TAG, "MediaPlayer error what=$what extra=$extra")
                 val hint = if (source is PlaySource.NetworkUrl && source.url.startsWith("rtmp", true)) {
                     "rtmp_unsupported_use_rtsp"
                 } else {
@@ -143,10 +142,6 @@ object VideoFeeder {
                 }
                 writeStatus(hint)
                 true
-            }
-            mp.setOnInfoListener { _, what, _ ->
-                Log.i(TAG, "MediaPlayer info=$what")
-                false
             }
             mp.prepareAsync()
             player = mp
@@ -185,6 +180,24 @@ object VideoFeeder {
         dummyTextures.clear()
     }
 
+    private fun readFirstExisting(vararg paths: String): String? {
+        for (p in paths) {
+            val f = File(p)
+            if (f.exists() && f.canRead()) {
+                return runCatching { f.readText() }.getOrNull()
+            }
+        }
+        return null
+    }
+
+    private fun firstExistingFile(vararg paths: String): String? {
+        for (p in paths) {
+            val f = File(p)
+            if (f.exists() && f.canRead() && f.length() > 0) return f.absolutePath
+        }
+        return null
+    }
+
     private fun isSupportedNetworkUrl(url: String): Boolean {
         val u = url.lowercase(Locale.US)
         return u.startsWith("rtsp://") ||
@@ -207,6 +220,7 @@ object VideoFeeder {
 
     private fun writeStatus(msg: String) {
         try {
+            File(CONTROL_DIR).mkdirs()
             val safe = msg.replace("\"", "'")
             File(STATUS).writeText(
                 """{"feeder":"$safe","ts":${System.currentTimeMillis()}}""",

@@ -14,8 +14,9 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-static constexpr const char *kControlPath = "/data/adb/vcamgd/control.json";
-static constexpr const char *kStatusPath = "/data/adb/vcamgd/status.json";
+static constexpr const char *kControlPath = "/data/local/tmp/vcamgd/control.json";
+static constexpr const char *kStatusPath = "/data/local/tmp/vcamgd/status.json";
+static constexpr const char *kLegacyControlPath = "/data/adb/vcamgd/control.json";
 
 struct ControlState {
     bool enabled = false;
@@ -193,9 +194,10 @@ private:
 };
 
 static void companion_handler(int client) {
+    mkdir("/data/local/tmp/vcamgd", 0777);
     mkdir("/data/adb/vcamgd", 0755);
     std::string json;
-    if (!read_file(kControlPath, json)) {
+    if (!read_file(kControlPath, json) && !read_file(kLegacyControlPath, json)) {
         json = "{\"enabled\":false,\"virtual\":true,\"source\":\"\",\"uri\":\"\",\"url\":\"\"}";
     }
 

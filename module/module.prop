@@ -1,6 +1,6 @@
 id=vcamgd
 name=VCamGD Virtual Camera
-version=v0.3.0
-versionCode=3
+version=v0.3.1
+versionCode=4
 author=vcamgd
-description=Zygisk IPC for VCamGD. Pair with LSPosed module (com.vcamgd.xposed) for Camera2 surface injection.
+description=Zygisk IPC for VCamGD (tmp + adb). Pair with LSPosed module com.vcamgd.xposed.

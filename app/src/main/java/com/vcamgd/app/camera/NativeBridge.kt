@@ -9,24 +9,26 @@ import java.io.File
 import java.io.InputStreamReader
 
 /**
- * Ponte com o modulo Magisk/Zygisk + arquivo de video compartilhado para o hook LSPosed.
- *
- * Controle: /data/adb/vcamgd/control.json
- * Video:    /data/adb/vcamgd/current.mp4
- * Status:   /data/adb/vcamgd/status.json
- * Marcador: /data/adb/modules/vcamgd/module.prop
+ * IPC primario: /data/local/tmp/vcamgd (legivel pelos apps / LSPosed)
+ * Espelho:     /data/adb/vcamgd (Magisk/Zygisk)
  */
 object NativeBridge {
     private const val TAG = "VCamGD-Native"
     private const val MODULE_PROP = "/data/adb/modules/vcamgd/module.prop"
-    private const val CONTROL_PATH = "/data/adb/vcamgd/control.json"
-    private const val STATUS_PATH = "/data/adb/vcamgd/status.json"
-    private const val VIDEO_PATH = "/data/adb/vcamgd/current.mp4"
+
+    private const val TMP_DIR = "/data/local/tmp/vcamgd"
+    private const val ADB_DIR = "/data/adb/vcamgd"
+    private const val CONTROL_TMP = "$TMP_DIR/control.json"
+    private const val CONTROL_ADB = "$ADB_DIR/control.json"
+    private const val STATUS_TMP = "$TMP_DIR/status.json"
+    private const val STATUS_ADB = "$ADB_DIR/status.json"
+    private const val VIDEO_TMP = "$TMP_DIR/current.mp4"
+    private const val VIDEO_ADB = "$ADB_DIR/current.mp4"
 
     fun isModulePresent(): Boolean = fileExistsAsRoot(MODULE_PROP)
 
     fun readModuleStatus(): String {
-        val raw = readFileAsRoot(STATUS_PATH)
+        val raw = readFileAsRoot(STATUS_TMP) ?: readFileAsRoot(STATUS_ADB)
         return if (raw.isNullOrBlank()) "Sem eventos do Zygisk/LSPosed ainda" else raw.trim()
     }
 
@@ -41,7 +43,7 @@ object NativeBridge {
             enabled = true,
             virtual = true,
             source = "local",
-            uri = VIDEO_PATH,
+            uri = VIDEO_TMP,
             url = "",
         )
     }
@@ -107,12 +109,13 @@ object NativeBridge {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 cache.outputStream().use { output -> input.copyTo(output) }
             } ?: return false
-            val ok = shellSu(
-                "mkdir -p /data/adb/vcamgd; " +
-                    "cp '${cache.absolutePath}' '$VIDEO_PATH'; " +
-                    "chmod 666 '$VIDEO_PATH'; " +
-                    "ls -l '$VIDEO_PATH'; echo OK",
-            ).contains("OK")
+            val script =
+                "mkdir -p '$TMP_DIR' '$ADB_DIR'; " +
+                    "cp '${cache.absolutePath}' '$VIDEO_TMP'; " +
+                    "cp '${cache.absolutePath}' '$VIDEO_ADB'; " +
+                    "chmod 777 '$TMP_DIR'; chmod 666 '$VIDEO_TMP' '$VIDEO_ADB'; " +
+                    "ls -l '$VIDEO_TMP'; echo OK"
+            val ok = shellSu(script).contains("OK")
             Log.i(TAG, "stageLocalVideo size=${cache.length()} ok=$ok")
             ok
         } catch (e: Exception) {
@@ -138,7 +141,7 @@ object NativeBridge {
     }
 
     private fun patchControlVirtual(virtual: Boolean) {
-        val current = readFileAsRoot(CONTROL_PATH)
+        val current = readFileAsRoot(CONTROL_TMP) ?: readFileAsRoot(CONTROL_ADB)
         val json = try {
             if (current.isNullOrBlank()) JSONObject() else JSONObject(current)
         } catch (_: Exception) {
@@ -146,7 +149,7 @@ object NativeBridge {
         }
         json.put("virtual", virtual)
         if (!json.has("enabled")) json.put("enabled", true)
-        writeFileAsRoot(CONTROL_PATH, json.toString())
+        writeControlFiles(json.toString())
     }
 
     private fun writeControl(
@@ -164,9 +167,21 @@ object NativeBridge {
             .put("uri", uri)
             .put("url", url)
             .toString()
-        val ok = writeFileAsRoot(CONTROL_PATH, json)
+        val ok = writeControlFiles(json)
         Log.i(TAG, "writeControl present=$present ok=$ok json=$json")
-        return present && ok
+        return ok
+    }
+
+    private fun writeControlFiles(json: String): Boolean {
+        val escaped = json.replace("'", "'\\''")
+        val script =
+            "mkdir -p '$TMP_DIR' '$ADB_DIR'; " +
+                "printf '%s' '$escaped' > '$CONTROL_TMP'; " +
+                "printf '%s' '$escaped' > '$CONTROL_ADB'; " +
+                "chmod 777 '$TMP_DIR'; chmod 666 '$CONTROL_TMP' '$CONTROL_ADB' " +
+                "'$STATUS_TMP' '$STATUS_ADB' 2>/dev/null; " +
+                "echo OK"
+        return shellSu(script).contains("OK")
     }
 
     private fun fileExistsAsRoot(path: String): Boolean {
@@ -180,13 +195,6 @@ object NativeBridge {
         }
         val out = shellSu("cat '$path' 2>/dev/null")
         return out.ifBlank { null }
-    }
-
-    private fun writeFileAsRoot(path: String, content: String): Boolean {
-        val escaped = content.replace("'", "'\\''")
-        val script =
-            "mkdir -p /data/adb/vcamgd; printf '%s' '$escaped' > '$path'; chmod 666 '$path'; echo OK"
-        return shellSu(script).contains("OK")
     }
 
     private fun shellSu(command: String): String {

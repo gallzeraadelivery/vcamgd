@@ -17,11 +17,12 @@ class CameraHookEntry : IXposedHookLoadPackage {
         if (lpparam.packageName == "com.vcamgd.app" || lpparam.packageName == "com.vcamgd.xposed") {
             return
         }
-        if (!VideoFeeder.shouldInject()) return
 
+        // Sempre instala os hooks. O enable é checado na hora do createCaptureSession.
         Log.i(TAG, "Installing Camera2 hooks in ${lpparam.packageName}")
         hookListSession(lpparam.classLoader)
         hookSessionConfiguration(lpparam.classLoader)
+        hookCameraDeviceImpl(lpparam.classLoader)
         writeHookStatus(lpparam.packageName)
     }
 
@@ -96,9 +97,60 @@ class CameraHookEntry : IXposedHookLoadPackage {
         }
     }
 
+    /** Algumas ROMs chamam a impl interna em vez da API pública. */
+    private fun hookCameraDeviceImpl(cl: ClassLoader) {
+        val candidates = arrayOf(
+            "android.hardware.camera2.impl.CameraDeviceImpl",
+            "android.hardware.camera2.legacy.LegacyCameraDevice",
+        )
+        val listClass = Class.forName("java.util.List")
+        for (name in candidates) {
+            try {
+                XposedHelpers.findAndHookMethod(
+                    name,
+                    cl,
+                    "createCaptureSession",
+                    listClass,
+                    CameraCaptureSession.StateCallback::class.java,
+                    Handler::class.java,
+                    object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            injectListSurfaces(param)
+                        }
+                    },
+                )
+                XposedBridge.log("$TAG hooked $name.createCaptureSession")
+            } catch (_: Throwable) {
+            }
+            try {
+                XposedHelpers.findAndHookMethod(
+                    name,
+                    cl,
+                    "createCaptureSession",
+                    SessionConfiguration::class.java,
+                    object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            if (!VideoFeeder.shouldInject()) return
+                            val config = param.args[0] as? SessionConfiguration ?: return
+                            val surfaces = ArrayList<Surface>()
+                            for (out in config.outputConfigurations) {
+                                surfaces.addAll(out.surfaces)
+                            }
+                            if (surfaces.isEmpty()) return
+                            VideoFeeder.startOnSurfaces(surfaces)
+                        }
+                    },
+                )
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
     private fun writeHookStatus(pkg: String) {
         try {
-            java.io.File("/data/adb/vcamgd/status.json").writeText(
+            val dir = java.io.File(VideoFeeder.CONTROL_DIR)
+            dir.mkdirs()
+            java.io.File(dir, "status.json").writeText(
                 """{"hook":"installed","pkg":"$pkg","ts":${System.currentTimeMillis()}}""",
             )
         } catch (_: Throwable) {

@@ -53,9 +53,8 @@ class VirtualCameraController(private val context: Context) {
         delay(200)
 
         if (!NativeBridge.isModulePresent()) {
-            val error = "Instale o modulo Magisk VCamGD (Zygisk) e reinicie"
-            fail(error)
-            return Result.failure(IllegalStateException(error))
+            // Ainda tenta: LSPosed pode funcionar sozinho com /data/local/tmp
+            // mas avisa no status.
         }
 
         val configured = when (sourceType) {
@@ -84,14 +83,14 @@ class VirtualCameraController(private val context: Context) {
         return if (configured) {
             _status.value = VirtualCameraStatus(
                 state = VirtualCameraState.ENABLED,
-                message = "Camera virtual ativa (controle enviado ao Zygisk)",
+                message = "Ativa. Force-stop no app alvo e abra de novo a camera.",
                 usingRealCamera = false,
                 moduleInstalled = true,
                 zygiskEvent = NativeBridge.readModuleStatus(),
             )
             Result.success(Unit)
         } else {
-            fail("Falha ao escrever controle em /data/adb/vcamgd (precisa de root)")
+            fail("Falha ao gravar controle (precisa conceder root ao VCamGD)")
             Result.failure(IllegalStateException("native configure failed"))
         }
     }
