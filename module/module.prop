@@ -1,6 +1,6 @@
 id=vcamgd
 name=VCamGD Virtual Camera
-version=v0.6.0
-versionCode=10
+version=v0.7.0
+versionCode=11
 author=vcamgd
-description=APK-only install: embeds Zygisk engine. Android 12-16. Moto-safe.
+description=OVCAM-like soft inject after session open. APK-only. Android 12-16.

@@ -6,6 +6,7 @@ import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
 import android.media.ImageReader;
 import android.media.MediaPlayer;
+import android.os.Build;
 import android.util.Log;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -23,10 +24,10 @@ import top.canyie.pine.Pine;
 import top.canyie.pine.callback.MethodHook;
 
 /**
- * Hard virtual camera (only loaded when Zygisk sees mode=virtual):
- * - MediaPlayer feeds the REAL preview Surfaces
- * - HAL receives DUMMY Surfaces so it does not fight MediaPlayer
- * When mode=real, Zygisk does not load this DEX at all.
+ * Injeção alinhada ao padrão OVCAM (observado no APK de referência):
+ * - Por padrão NÃO altera os argumentos de createCaptureSession (evita 03400001 na Moto).
+ * - Alimenta o preview com MediaPlayer no afterCall, depois que a sessão já abriu.
+ * - Modo "hard" opcional (control.inject=hard) para apps que precisam bloquear o HAL.
  */
 public final class HookEntry {
     private static final String TAG = "VCamGD-ZygiskHook";
@@ -67,6 +68,7 @@ public final class HookEntry {
     private static final ArrayList<SurfaceTexture> dummies = new ArrayList<>();
     private static final ArrayList<ImageReader> dummyReaders = new ArrayList<>();
     private static final AtomicReference<String> processHint = new AtomicReference<>("unknown");
+    private static volatile List<Surface> lastPreview = new ArrayList<>();
 
     public static void install() {
         install("unknown");
@@ -77,16 +79,25 @@ public final class HookEntry {
             processHint.set(processName);
         }
         try {
-            writeStatus("installing:" + processHint.get());
+            writeStatus("installing:" + processHint.get() + ":mfr=" + Build.MANUFACTURER);
             int hooked = 0;
             hooked += hookCamera2();
             hooked += hookCamera1();
-            writeStatus("hooks_ready:" + processHint.get() + ":n=" + hooked);
-            Log.i(TAG, "HookEntry.install done process=" + processHint.get() + " hooked=" + hooked);
+            writeStatus("hooks_ready:" + processHint.get() + ":n=" + hooked + ":mode=" + injectMode());
+            Log.i(TAG, "install done process=" + processHint.get() + " hooked=" + hooked);
         } catch (Throwable t) {
             Log.e(TAG, "install failed", t);
             writeStatus("install_error:" + t.getMessage());
         }
+    }
+
+    /** soft (default, OVCAM-like) | hard (dummy HAL surfaces) */
+    private static String injectMode() {
+        JSONObject json = readControl();
+        if (json == null) return "soft";
+        String m = json.optString("inject", "soft").trim().toLowerCase(Locale.US);
+        if ("hard".equals(m)) return "hard";
+        return "soft";
     }
 
     private static int hookCamera2() {
@@ -95,10 +106,9 @@ public final class HookEntry {
             try {
                 Class<?> clazz = Class.forName(className);
                 for (Method m : clazz.getDeclaredMethods()) {
-                    String name = m.getName();
                     boolean match = false;
                     for (String sm : SESSION_METHODS) {
-                        if (sm.equals(name)) {
+                        if (sm.equals(m.getName())) {
                             match = true;
                             break;
                         }
@@ -109,17 +119,25 @@ public final class HookEntry {
                         @Override
                         public void beforeCall(Pine.CallFrame callFrame) {
                             try {
-                                handleCamera2Session(callFrame);
+                                beforeCamera2(callFrame);
                             } catch (Throwable t) {
-                                Log.e(TAG, "camera2 beforeCall failed", t);
+                                Log.e(TAG, "camera2 before", t);
+                            }
+                        }
+
+                        @Override
+                        public void afterCall(Pine.CallFrame callFrame) {
+                            try {
+                                afterCamera2(callFrame);
+                            } catch (Throwable t) {
+                                Log.e(TAG, "camera2 after", t);
                             }
                         }
                     });
                     count++;
-                    Log.i(TAG, "hooked " + className + "#" + method.getName());
                 }
             } catch (Throwable t) {
-                Log.w(TAG, "skip class " + className + ": " + t.getMessage());
+                Log.w(TAG, "skip " + className + ": " + t.getMessage());
             }
         }
         return count;
@@ -141,62 +159,80 @@ public final class HookEntry {
                     @Override
                     public void beforeCall(Pine.CallFrame callFrame) {
                         try {
-                            handleCamera1(method.getName(), callFrame);
+                            beforeCamera1(method.getName(), callFrame);
                         } catch (Throwable t) {
-                            Log.e(TAG, "camera1 beforeCall failed", t);
+                            Log.e(TAG, "camera1 before", t);
+                        }
+                    }
+
+                    @Override
+                    public void afterCall(Pine.CallFrame callFrame) {
+                        try {
+                            if ("startPreview".equals(method.getName()) && shouldInject()) {
+                                if (!lastPreview.isEmpty()) {
+                                    startOnSurfaces(lastPreview);
+                                    writeStatus("soft_cam1_after_start:" + processHint.get());
+                                }
+                            }
+                        } catch (Throwable ignored) {
                         }
                     }
                 });
                 count++;
-                Log.i(TAG, "hooked Camera#" + name);
             }
         } catch (Throwable t) {
-            Log.w(TAG, "Camera1 hook skipped: " + t.getMessage());
+            Log.w(TAG, "Camera1 skip: " + t.getMessage());
         }
         return count;
     }
 
-    private static void handleCamera1(String methodName, Pine.CallFrame frame) throws Throwable {
+    private static void beforeCamera1(String methodName, Pine.CallFrame frame) {
         if (!shouldInject()) return;
         Object[] args = frame.args;
-        if ("setPreviewDisplay".equals(methodName) && args != null && args.length > 0) {
+        boolean hard = "hard".equals(injectMode());
+        if ("setPreviewDisplay".equals(methodName) && args != null && args.length > 0 && args[0] instanceof SurfaceHolder) {
             SurfaceHolder holder = (SurfaceHolder) args[0];
-            if (holder == null) return;
             Surface real = holder.getSurface();
-            if (real == null || !real.isValid()) return;
-            startOnSurfaces(singleton(real));
-            writeStatus("hard_cam1_display:" + processHint.get());
+            if (real != null && real.isValid()) {
+                lastPreview = singleton(real);
+                if (!hard) {
+                    // OVCAM-like: nao mexe no holder; feeder no after/startPreview
+                    return;
+                }
+                startOnSurfaces(lastPreview);
+            }
             return;
         }
-        if ("setPreviewTexture".equals(methodName) && args != null && args.length > 0) {
+        if ("setPreviewTexture".equals(methodName) && args != null && args.length > 0 && args[0] instanceof SurfaceTexture) {
             SurfaceTexture tex = (SurfaceTexture) args[0];
-            if (tex == null) return;
             Surface real = new Surface(tex);
-            startOnSurfaces(singleton(real));
-            frame.args[0] = newDummyTexture(1280, 720);
-            writeStatus("hard_cam1_texture:" + processHint.get());
-            return;
-        }
-        if ("startPreview".equals(methodName) && player != null) {
-            writeStatus("hard_cam1_start:" + processHint.get());
+            lastPreview = singleton(real);
+            if (hard) {
+                startOnSurfaces(lastPreview);
+                frame.args[0] = newDummyTexture(1280, 720);
+            }
         }
     }
 
-    private static void handleCamera2Session(Pine.CallFrame frame) throws Throwable {
-        if (!shouldInject()) return;
+    private static void beforeCamera2(Pine.CallFrame frame) {
         Object[] args = frame.args;
         if (args == null || args.length == 0) return;
-
-        Object primary = args[0];
-        ArrayList<Surface> surfaces = extractSurfaces(primary);
-        if (surfaces.isEmpty() && args.length > 1) {
-            surfaces = extractSurfaces(args[1]);
-        }
+        ArrayList<Surface> surfaces = extractSurfaces(args[0]);
+        if (surfaces.isEmpty() && args.length > 1) surfaces = extractSurfaces(args[1]);
         if (surfaces.isEmpty()) return;
 
-        ArrayList<Surface> preview = pickPreviewSurfaces(surfaces);
-        startOnSurfaces(preview);
+        lastPreview = pickPreviewSurfaces(surfaces);
 
+        if (!shouldInject()) return;
+        if (!"hard".equals(injectMode())) {
+            // soft: nao altera args — sessao HAL nativa (Moto abre sem 03400001)
+            writeStatus("soft_cam2_before:" + processHint.get() + ":s=" + surfaces.size());
+            return;
+        }
+
+        // hard: troca por dummies ImageReader-compativeis
+        startOnSurfaces(lastPreview);
+        Object primary = args[0];
         if (primary instanceof SessionConfiguration) {
             SessionConfiguration config = (SessionConfiguration) primary;
             ArrayList<OutputConfiguration> outs = new ArrayList<>();
@@ -204,31 +240,33 @@ public final class HookEntry {
                 outs.add(new OutputConfiguration(dummy));
             }
             frame.args[0] = new SessionConfiguration(
-                    config.getSessionType(),
-                    outs,
-                    config.getExecutor(),
-                    config.getStateCallback()
-            );
-            writeStatus("hard_cam2_sessioncfg:" + processHint.get() + ":s=" + surfaces.size());
+                    config.getSessionType(), outs, config.getExecutor(), config.getStateCallback());
+            writeStatus("hard_cam2_sessioncfg:" + processHint.get());
             return;
         }
-
         if (primary instanceof List) {
             @SuppressWarnings("unchecked")
             List<Object> list = (List<Object>) primary;
-            boolean outputConfigs = !list.isEmpty() && list.get(0) instanceof OutputConfiguration;
-            if (outputConfigs) {
+            if (!list.isEmpty() && list.get(0) instanceof OutputConfiguration) {
                 ArrayList<OutputConfiguration> outs = new ArrayList<>();
                 for (Surface dummy : createDummySurfaces(surfaces.size())) {
                     outs.add(new OutputConfiguration(dummy));
                 }
                 frame.args[0] = outs;
-                writeStatus("hard_cam2_outcfg:" + processHint.get() + ":s=" + surfaces.size());
             } else {
                 frame.args[0] = createDummySurfaces(surfaces.size());
-                writeStatus("hard_cam2_list:" + processHint.get() + ":s=" + surfaces.size());
             }
+            writeStatus("hard_cam2_list:" + processHint.get());
         }
+    }
+
+    private static void afterCamera2(Pine.CallFrame frame) {
+        if (!shouldInject()) return;
+        if ("hard".equals(injectMode())) return; // ja alimentou no before
+        if (lastPreview == null || lastPreview.isEmpty()) return;
+        // OVCAM-like: sessao ja criada com Surfaces reais → agora joga o video por cima
+        startOnSurfaces(lastPreview);
+        writeStatus("soft_cam2_after:" + processHint.get() + ":s=" + lastPreview.size());
     }
 
     @SuppressWarnings("unchecked")
@@ -241,9 +279,8 @@ public final class HookEntry {
         }
         if (arg instanceof List) {
             for (Object o : (List<Object>) arg) {
-                if (o instanceof Surface) {
-                    surfaces.add((Surface) o);
-                } else if (o instanceof OutputConfiguration) {
+                if (o instanceof Surface) surfaces.add((Surface) o);
+                else if (o instanceof OutputConfiguration) {
                     surfaces.addAll(((OutputConfiguration) o).getSurfaces());
                 }
             }
@@ -266,9 +303,6 @@ public final class HookEntry {
         ArrayList<Surface> ordered = new ArrayList<>();
         ordered.add(preferred.get(preferred.size() - 1));
         if (preferred.size() > 1) ordered.add(preferred.get(0));
-        for (int i = 1; i < preferred.size() - 1; i++) {
-            ordered.add(preferred.get(i));
-        }
         return ordered;
     }
 
@@ -307,8 +341,11 @@ public final class HookEntry {
     }
 
     private static synchronized void startOnSurfaces(List<Surface> surfaces) {
+        if (!shouldInject()) {
+            stopPlayer();
+            return;
+        }
         JSONObject json = readControl();
-        if (json == null) return;
         Object src = resolveSource(json);
         if (src == null) {
             writeStatus("no_playable_source");
@@ -336,8 +373,12 @@ public final class HookEntry {
             mp.setVolume(0f, 0f);
             mp.setOnPreparedListener(p -> {
                 try {
+                    if (!shouldInject()) {
+                        p.release();
+                        return;
+                    }
                     p.start();
-                    writeStatus("feeding:" + processHint.get() + ":" + source);
+                    writeStatus("feeding:" + processHint.get() + ":" + injectMode() + ":" + source);
                 } catch (Throwable t) {
                     writeStatus("start_error:" + t.getMessage());
                 }
@@ -362,25 +403,18 @@ public final class HookEntry {
         return out;
     }
 
-    /**
-     * Motorola/Qualcomm HAL rejects SurfaceTexture(0). Prefer ImageReader surfaces
-     * (valid producer for camera) — required to avoid errors like 03400001 on Moto G60.
-     */
     private static Surface newHalCompatibleSurface(int w, int h) {
         try {
             ImageReader reader = ImageReader.newInstance(w, h, ImageFormat.YUV_420_888, 2);
             dummyReaders.add(reader);
             Surface s = reader.getSurface();
             if (s != null && s.isValid()) return s;
-        } catch (Throwable t) {
-            Log.w(TAG, "ImageReader dummy failed, fallback SurfaceTexture", t);
+        } catch (Throwable ignored) {
         }
-        SurfaceTexture st = newDummyTexture(w, h);
-        return new Surface(st);
+        return new Surface(newDummyTexture(w, h));
     }
 
     private static SurfaceTexture newDummyTexture(int w, int h) {
-        // API 26+: detached SurfaceTexture (not texture name 0 — breaks Moto HAL)
         SurfaceTexture st = new SurfaceTexture(false);
         st.setDefaultBufferSize(w, h);
         dummies.add(st);
@@ -424,8 +458,7 @@ public final class HookEntry {
     }
 
     private static String readFile(File f) throws Exception {
-        byte[] data = java.nio.file.Files.readAllBytes(f.toPath());
-        return new String(data);
+        return new String(java.nio.file.Files.readAllBytes(f.toPath()));
     }
 
     private static void writeStatus(String msg) {

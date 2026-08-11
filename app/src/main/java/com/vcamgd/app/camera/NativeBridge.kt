@@ -269,6 +269,7 @@ object NativeBridge {
             .put("enabled", enabled)
             .put("virtual", virtual)
             .put("mode", mode)
+            .put("inject", EngineFacade.injectField())
             .put("source", source)
             .put("uri", uri)
             .put("url", url)

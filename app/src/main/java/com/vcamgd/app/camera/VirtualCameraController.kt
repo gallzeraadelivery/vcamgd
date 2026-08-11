@@ -81,7 +81,7 @@ class VirtualCameraController(private val context: Context) {
         return if (configured) {
             _status.value = VirtualCameraStatus(
                 state = VirtualCameraState.ENABLED,
-                message = "Virtual ativa. Use overlay Real/Virtual para intercalar. Reabra a camera.",
+                message = "Virtual (soft/OVCAM-like). Reabra a camera. Status mostra feeding:...",
                 usingRealCamera = false,
                 moduleInstalled = NativeBridge.isModulePresent(),
                 zygiskEvent = NativeBridge.readModuleStatus(),

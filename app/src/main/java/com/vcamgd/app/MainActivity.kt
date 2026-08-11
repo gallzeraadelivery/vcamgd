@@ -36,6 +36,11 @@ class MainActivity : AppCompatActivity() {
         binding.bottomNav.setupWithNavController(navHost.navController)
 
         vm = ViewModelProvider(this)[MainViewModel::class.java]
+        com.vcamgd.app.camera.EngineFacade.warmUp(this)
+        // Moto G60 / OEM: soft inject (OVCAM-like). Hard so sob demanda.
+        com.vcamgd.app.camera.EngineFacade.setInjectStyle(
+            com.vcamgd.app.camera.EngineFacade.InjectStyle.SOFT,
+        )
         vm.uiState.observe(this) { state ->
             if (state.needsReboot && !rebootDialogShown) {
                 rebootDialogShown = true

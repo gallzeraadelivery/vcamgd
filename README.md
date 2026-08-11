@@ -17,6 +17,16 @@ Releases: https://github.com/gallzeraadelivery/vcamgd/releases
 
 Nao precisa baixar/instalar ZIP Magisk manualmente (o ZIP ainda existe no release so para avancados).
 
+## Motor (alinhado ao OVCAM)
+
+O APK de referencia usa um `.so` criptografado + JNI (`a.b.N`). Nao copiamos o binario
+(assinatura/licenca). Replicamos o **comportamento**:
+
+1. APK unico instala o motor (Zygisk) sozinho  
+2. Injecao **soft** por padrao: alimenta o preview **depois** da sessao Camera abrir  
+   (nao troca Surfaces antes — evita `03400001` na Motorola)  
+3. `inject=hard` opcional no `control.json` para apps que exigem bloquear o HAL  
+
 ## Real vs Virtual
 
 | Modo | Comportamento |
