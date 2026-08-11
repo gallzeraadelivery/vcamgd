@@ -11,6 +11,11 @@ import java.io.InputStreamReader
 /**
  * IPC primario: /data/local/tmp/vcamgd (legivel pelos apps / hooks Zygisk)
  * Espelho:     /data/adb/vcamgd (Magisk/Zygisk)
+ *
+ * Controle:
+ *  enabled + mode=virtual => feeder de video
+ *  enabled + mode=real    => pass-through (camera real)
+ *  enabled=false          => desligado
  */
 object NativeBridge {
     private const val TAG = "VCamGD-Native"
@@ -24,6 +29,27 @@ object NativeBridge {
     private const val STATUS_ADB = "$ADB_DIR/status.json"
     private const val VIDEO_TMP = "$TMP_DIR/current.mp4"
     private const val VIDEO_ADB = "$ADB_DIR/current.mp4"
+
+    /** Pacotes comuns de camera — force-stop ao intercalar Real/Virtual. */
+    private val CAMERA_PACKAGES = listOf(
+        "com.android.camera",
+        "com.android.camera2",
+        "com.google.android.GoogleCamera",
+        "com.google.android.apps.cameralite",
+        "com.sec.android.app.camera",
+        "com.samsung.android.camera",
+        "com.miui.camera",
+        "com.android.mmc",
+        "org.codeaurora.snapcam",
+        "com.huawei.camera",
+        "com.oplus.camera",
+        "com.oneplus.camera",
+        "com.motorola.camera",
+        "com.motorola.camera2",
+        "com.motorola.camera3",
+        "com.sonyericsson.android.camera",
+        "com.transsion.camera",
+    )
 
     fun isModulePresent(): Boolean = fileExistsAsRoot(MODULE_PROP)
 
@@ -39,13 +65,16 @@ object NativeBridge {
             Log.e(TAG, "Failed to stage local video")
             return false
         }
-        return writeControl(
+        val ok = writeControl(
             enabled = true,
             virtual = true,
+            mode = "virtual",
             source = "local",
             uri = VIDEO_TMP,
             url = "",
         )
+        if (ok) restartCameraApps()
+        return ok
     }
 
     fun setNetworkSource(context: Context, url: String): Boolean {
@@ -55,13 +84,16 @@ object NativeBridge {
             return false
         }
         persist(context, "network", url = normalized)
-        return writeControl(
+        val ok = writeControl(
             enabled = true,
             virtual = true,
+            mode = "virtual",
             source = "network",
             uri = "",
             url = normalized,
         )
+        if (ok) restartCameraApps()
+        return ok
     }
 
     private fun isValidNetworkUrl(url: String): Boolean {
@@ -76,31 +108,68 @@ object NativeBridge {
 
     fun setUsbSource(context: Context): Boolean {
         persist(context, "usb")
-        return writeControl(enabled = true, virtual = true, source = "usb", uri = "", url = "")
+        val ok = writeControl(
+            enabled = true,
+            virtual = true,
+            mode = "virtual",
+            source = "usb",
+            uri = "",
+            url = "",
+        )
+        if (ok) restartCameraApps()
+        return ok
     }
 
     fun disable(context: Context) {
         context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
             .edit()
             .putBoolean("enabled", false)
+            .putBoolean("virtual", false)
+            .putString("mode", "real")
             .apply()
-        writeControl(enabled = false, virtual = false, source = "", uri = "", url = "")
+        writeControl(
+            enabled = false,
+            virtual = false,
+            mode = "real",
+            source = "",
+            uri = "",
+            url = "",
+        )
+        restartCameraApps()
     }
 
     fun switchToReal(context: Context) {
         context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
             .edit()
             .putBoolean("virtual", false)
+            .putString("mode", "real")
             .apply()
-        patchControlVirtual(false)
+        patchControlMode("real", virtual = false)
+        restartCameraApps()
     }
 
     fun switchToVirtual(context: Context) {
         context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
             .edit()
             .putBoolean("virtual", true)
+            .putBoolean("enabled", true)
+            .putString("mode", "virtual")
             .apply()
-        patchControlVirtual(true)
+        patchControlMode("virtual", virtual = true)
+        restartCameraApps()
+    }
+
+    /** Force-stop apps de camera para a nova sessao ler o modo atual. */
+    fun restartCameraApps() {
+        val cmds = CAMERA_PACKAGES.joinToString("; ") { "am force-stop $it 2>/dev/null" }
+        val script =
+            "$cmds; " +
+                // Tambem tenta descobrir pacotes com CAMERA permission em uso
+                "for p in \$(dumpsys media.camera 2>/dev/null | grep -oE 'com\\.[a-zA-Z0-9_.]+' | sort -u); do " +
+                "am force-stop \"\$p\" 2>/dev/null; done; " +
+                "echo OK"
+        val out = shellSu(script)
+        Log.i(TAG, "restartCameraApps: ${out.take(200)}")
     }
 
     private fun stageLocalVideo(context: Context, uri: Uri): Boolean {
@@ -137,24 +206,28 @@ object NativeBridge {
             .putString("url", url)
             .putBoolean("enabled", true)
             .putBoolean("virtual", true)
+            .putString("mode", "virtual")
             .apply()
     }
 
-    private fun patchControlVirtual(virtual: Boolean) {
+    private fun patchControlMode(mode: String, virtual: Boolean) {
         val current = readFileAsRoot(CONTROL_TMP) ?: readFileAsRoot(CONTROL_ADB)
         val json = try {
             if (current.isNullOrBlank()) JSONObject() else JSONObject(current)
         } catch (_: Exception) {
             JSONObject()
         }
+        json.put("mode", mode)
         json.put("virtual", virtual)
         if (!json.has("enabled")) json.put("enabled", true)
+        if (mode == "virtual") json.put("enabled", true)
         writeControlFiles(json.toString())
     }
 
     private fun writeControl(
         enabled: Boolean,
         virtual: Boolean,
+        mode: String,
         source: String,
         uri: String,
         url: String,
@@ -163,6 +236,7 @@ object NativeBridge {
         val json = JSONObject()
             .put("enabled", enabled)
             .put("virtual", virtual)
+            .put("mode", mode)
             .put("source", source)
             .put("uri", uri)
             .put("url", url)

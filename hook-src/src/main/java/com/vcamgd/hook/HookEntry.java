@@ -4,6 +4,9 @@ import android.graphics.SurfaceTexture;
 import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
 import android.media.MediaPlayer;
+import android.os.FileObserver;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -15,13 +18,16 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import top.canyie.pine.Pine;
 import top.canyie.pine.callback.MethodHook;
 
 /**
- * Hooks Camera1 + Camera2 so stock camera apps and 3rd-party apps get virtual feed.
+ * Soft virtual camera: plays video onto preview Surfaces WITHOUT replacing HAL surfaces.
+ * mode=real or enabled=false => complete pass-through (real camera works).
+ * mode=virtual + enabled => MediaPlayer feeds preview; camera session stays intact.
  */
 public final class HookEntry {
     private static final String TAG = "VCamGD-ZygiskHook";
@@ -59,8 +65,12 @@ public final class HookEntry {
     }
 
     private static MediaPlayer player;
-    private static final ArrayList<SurfaceTexture> dummies = new ArrayList<>();
+    private static final ArrayList<SurfaceTexture> retainedTextures = new ArrayList<>();
     private static final AtomicReference<String> processHint = new AtomicReference<>("unknown");
+    private static final AtomicBoolean watching = new AtomicBoolean(false);
+    private static final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private static FileObserver controlObserver;
+    private static volatile List<Surface> lastPreviewSurfaces = new ArrayList<>();
 
     public static void install() {
         install("unknown");
@@ -75,11 +85,61 @@ public final class HookEntry {
             int hooked = 0;
             hooked += hookCamera2();
             hooked += hookCamera1();
+            startControlWatcher();
+            applyControlState("boot");
             writeStatus("hooks_ready:" + processHint.get() + ":n=" + hooked);
             Log.i(TAG, "HookEntry.install done process=" + processHint.get() + " hooked=" + hooked);
         } catch (Throwable t) {
             Log.e(TAG, "install failed", t);
             writeStatus("install_error:" + t.getMessage());
+        }
+    }
+
+    private static void startControlWatcher() {
+        if (!watching.compareAndSet(false, true)) return;
+        try {
+            File dir = new File(CONTROL_DIR);
+            dir.mkdirs();
+            controlObserver = new FileObserver(dir.getAbsolutePath(),
+                    FileObserver.MODIFY | FileObserver.CLOSE_WRITE | FileObserver.MOVED_TO | FileObserver.CREATE) {
+                @Override
+                public void onEvent(int event, String path) {
+                    if (path == null) return;
+                    if (!"control.json".equals(path)) return;
+                    mainHandler.post(() -> applyControlState("watch"));
+                }
+            };
+            controlObserver.startWatching();
+            // Fallback poll every 1.5s (some ROMs miss FileObserver on /data/local/tmp)
+            mainHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    applyControlState("poll");
+                    mainHandler.postDelayed(this, 1500);
+                }
+            }, 1500);
+        } catch (Throwable t) {
+            Log.w(TAG, "control watcher failed", t);
+        }
+    }
+
+    /** React to Real/Virtual switch without waiting for a new camera session. */
+    private static synchronized void applyControlState(String reason) {
+        try {
+            if (!shouldInject()) {
+                if (player != null) {
+                    stopPlayer();
+                    writeStatus("passthrough_real:" + processHint.get() + ":" + reason);
+                }
+                return;
+            }
+            // Virtual mode: if we already have preview surfaces, (re)start feeder
+            if (!lastPreviewSurfaces.isEmpty()) {
+                startOnSurfaces(lastPreviewSurfaces);
+                writeStatus("refeed:" + processHint.get() + ":" + reason);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "applyControlState", t);
         }
     }
 
@@ -151,6 +211,7 @@ public final class HookEntry {
     }
 
     private static void handleCamera1(String methodName, Pine.CallFrame frame) throws Throwable {
+        // Soft inject: NEVER replace Camera1 args — keeps real camera usable when mode=real
         if (!shouldInject()) return;
         Object[] args = frame.args;
         if ("setPreviewDisplay".equals(methodName) && args != null && args.length > 0) {
@@ -158,35 +219,27 @@ public final class HookEntry {
             if (holder == null) return;
             Surface real = holder.getSurface();
             if (real == null || !real.isValid()) return;
-            startOnSurfaces(singleton(real));
-            // Keep real SurfaceHolder so Camera1 still "opens"; frames come from MediaPlayer.
-            // Some devices need a dummy: swap holder is not possible; rely on MediaPlayer overlay.
-            writeStatus("camera1_preview_display:" + processHint.get());
+            rememberAndFeed(singleton(real));
+            writeStatus("soft_cam1_display:" + processHint.get());
             return;
         }
         if ("setPreviewTexture".equals(methodName) && args != null && args.length > 0) {
             SurfaceTexture tex = (SurfaceTexture) args[0];
             if (tex == null) return;
+            retainedTextures.add(tex);
             Surface real = new Surface(tex);
-            startOnSurfaces(singleton(real));
-            // Replace with dummy texture so HAL frames go nowhere; MediaPlayer drives real.
-            SurfaceTexture dummy = newDummyTexture(1280, 720);
-            frame.args[0] = dummy;
-            writeStatus("camera1_preview_texture:" + processHint.get());
+            rememberAndFeed(singleton(real));
+            // Do NOT swap for dummy — real camera HAL keeps working
+            writeStatus("soft_cam1_texture:" + processHint.get());
             return;
         }
-        if ("startPreview".equals(methodName)) {
-            // Re-assert feeder if already configured via setPreview*
-            if (player == null && shouldInject()) {
-                writeStatus("camera1_start_preview_no_surface:" + processHint.get());
-            } else if (player != null) {
-                writeStatus("camera1_start_preview:" + processHint.get());
-            }
+        if ("startPreview".equals(methodName) && shouldInject() && !lastPreviewSurfaces.isEmpty()) {
+            startOnSurfaces(lastPreviewSurfaces);
+            writeStatus("soft_cam1_start:" + processHint.get());
         }
     }
 
     private static void handleCamera2Session(Pine.CallFrame frame) throws Throwable {
-        if (!shouldInject()) return;
         Object[] args = frame.args;
         if (args == null || args.length == 0) return;
 
@@ -197,40 +250,24 @@ public final class HookEntry {
         }
         if (surfaces.isEmpty()) return;
 
-        startOnSurfaces(pickPreviewSurfaces(surfaces));
+        // Always remember preview surfaces so Real->Virtual can refeed without new session
+        ArrayList<Surface> preview = pickPreviewSurfaces(surfaces);
+        lastPreviewSurfaces = new ArrayList<>(preview);
 
-        if (primary instanceof SessionConfiguration) {
-            SessionConfiguration config = (SessionConfiguration) primary;
-            ArrayList<OutputConfiguration> outs = new ArrayList<>();
-            for (Surface dummy : createDummySurfaces(surfaces.size())) {
-                outs.add(new OutputConfiguration(dummy));
-            }
-            frame.args[0] = new SessionConfiguration(
-                    config.getSessionType(),
-                    outs,
-                    config.getExecutor(),
-                    config.getStateCallback()
-            );
-            writeStatus("camera2_sessioncfg:" + processHint.get() + ":s=" + surfaces.size());
+        if (!shouldInject()) {
+            // Complete pass-through — do not touch frame.args
+            writeStatus("passthrough_session:" + processHint.get() + ":s=" + surfaces.size());
             return;
         }
 
-        if (primary instanceof List) {
-            @SuppressWarnings("unchecked")
-            List<Object> list = (List<Object>) primary;
-            boolean outputConfigs = !list.isEmpty() && list.get(0) instanceof OutputConfiguration;
-            if (outputConfigs) {
-                ArrayList<OutputConfiguration> outs = new ArrayList<>();
-                for (Surface dummy : createDummySurfaces(surfaces.size())) {
-                    outs.add(new OutputConfiguration(dummy));
-                }
-                frame.args[0] = outs;
-                writeStatus("camera2_outcfg:" + processHint.get() + ":s=" + surfaces.size());
-            } else {
-                frame.args[0] = createDummySurfaces(surfaces.size());
-                writeStatus("camera2_list:" + processHint.get() + ":s=" + surfaces.size());
-            }
-        }
+        // Soft inject: feed MediaPlayer onto preview, leave HAL surfaces untouched
+        startOnSurfaces(preview);
+        writeStatus("soft_cam2:" + processHint.get() + ":s=" + surfaces.size());
+    }
+
+    private static void rememberAndFeed(List<Surface> surfaces) {
+        lastPreviewSurfaces = new ArrayList<>(surfaces);
+        startOnSurfaces(surfaces);
     }
 
     @SuppressWarnings("unchecked")
@@ -259,23 +296,17 @@ public final class HookEntry {
         return surfaces;
     }
 
-    /**
-     * Prefer Surfaces that look like preview (SurfaceTexture-backed / first valid).
-     * Stock cameras often put ImageReader first; feeding only that shows black preview.
-     */
     private static ArrayList<Surface> pickPreviewSurfaces(List<Surface> all) {
         ArrayList<Surface> preferred = new ArrayList<>();
         for (Surface s : all) {
             if (s != null && s.isValid()) preferred.add(s);
         }
         if (preferred.isEmpty()) return preferred;
-        // Feed the largest-index valid surface first (often preview), then first.
         ArrayList<Surface> ordered = new ArrayList<>();
         ordered.add(preferred.get(preferred.size() - 1));
         if (preferred.size() > 1) {
             ordered.add(preferred.get(0));
         }
-        // Also try middle ones for multi-preview OEM cams
         for (int i = 1; i < preferred.size() - 1; i++) {
             ordered.add(preferred.get(i));
         }
@@ -288,10 +319,21 @@ public final class HookEntry {
         return list;
     }
 
+    /**
+     * Virtual only when enabled AND mode!=real AND virtual!=false AND source exists.
+     */
     private static boolean shouldInject() {
         JSONObject json = readControl();
         if (json == null) return false;
-        if (!json.optBoolean("enabled", false) || !json.optBoolean("virtual", true)) return false;
+        if (!json.optBoolean("enabled", false)) return false;
+
+        String mode = json.optString("mode", "").trim().toLowerCase(Locale.US);
+        if ("real".equals(mode)) return false;
+        if ("virtual".equals(mode)) {
+            return resolveSource(json) != null;
+        }
+        // Legacy: virtual boolean
+        if (!json.optBoolean("virtual", true)) return false;
         return resolveSource(json) != null;
     }
 
@@ -315,7 +357,10 @@ public final class HookEntry {
 
     private static synchronized void startOnSurfaces(List<Surface> surfaces) {
         JSONObject json = readControl();
-        if (json == null) return;
+        if (json == null || !shouldInject()) {
+            stopPlayer();
+            return;
+        }
         Object src = resolveSource(json);
         if (src == null) {
             writeStatus("no_playable_source");
@@ -323,7 +368,6 @@ public final class HookEntry {
         }
         stopPlayer();
         try {
-            // MediaPlayer drives one Surface; pick first preferred (preview).
             Surface target = null;
             for (Surface s : surfaces) {
                 if (s != null && s.isValid()) {
@@ -344,6 +388,10 @@ public final class HookEntry {
             mp.setVolume(0f, 0f);
             mp.setOnPreparedListener(p -> {
                 try {
+                    if (!shouldInject()) {
+                        p.release();
+                        return;
+                    }
                     p.start();
                     writeStatus("feeding:" + processHint.get() + ":" + source);
                 } catch (Throwable t) {
@@ -362,22 +410,6 @@ public final class HookEntry {
         }
     }
 
-    private static List<Surface> createDummySurfaces(int count) {
-        ArrayList<Surface> out = new ArrayList<>();
-        for (int i = 0; i < count; i++) {
-            out.add(new Surface(newDummyTexture(1280, 720)));
-        }
-        return out;
-    }
-
-    private static SurfaceTexture newDummyTexture(int w, int h) {
-        SurfaceTexture st = new SurfaceTexture(0);
-        st.detachFromGLContext();
-        st.setDefaultBufferSize(w, h);
-        dummies.add(st);
-        return st;
-    }
-
     private static void stopPlayer() {
         try {
             if (player != null) {
@@ -387,13 +419,6 @@ public final class HookEntry {
         } catch (Throwable ignored) {
         }
         player = null;
-        for (SurfaceTexture st : dummies) {
-            try {
-                st.release();
-            } catch (Throwable ignored) {
-            }
-        }
-        dummies.clear();
     }
 
     private static JSONObject readControl() {

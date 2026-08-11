@@ -102,11 +102,11 @@ class OverlayService : Service() {
             setPadding(24, 16, 24, 16)
             addView(actionButton("Virtual") {
                 controller.switchToVirtualCamera()
-                toast("Câmera virtual")
+                toast("Virtual — reabra a camera")
             })
             addView(actionButton("Real") {
                 controller.switchToRealCamera()
-                toast("Câmera real")
+                toast("Real — reabra a camera")
             })
             addView(actionButton("Parar") {
                 scope.launch {

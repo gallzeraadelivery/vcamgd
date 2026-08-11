@@ -35,7 +35,10 @@ class VirtualCameraController(private val context: Context) {
             zygiskEvent = event,
             message = when {
                 !installed -> "Modulo de camera virtual nao instalado"
-                _status.value.state == VirtualCameraState.ENABLED -> "Camera virtual ativa"
+                _status.value.state == VirtualCameraState.ENABLED && !_status.value.usingRealCamera ->
+                    "Modo virtual ativo"
+                _status.value.state == VirtualCameraState.ENABLED && _status.value.usingRealCamera ->
+                    "Modo real (pass-through)"
                 else -> "Modulo Zygisk detectado"
             },
         )
@@ -78,7 +81,7 @@ class VirtualCameraController(private val context: Context) {
         return if (configured) {
             _status.value = VirtualCameraStatus(
                 state = VirtualCameraState.ENABLED,
-                message = "Ativa (Camera1+Camera2). Force-stop na camera do sistema e abra de novo.",
+                message = "Virtual ativa. Use overlay Real/Virtual para intercalar. Reabra a camera.",
                 usingRealCamera = false,
                 moduleInstalled = NativeBridge.isModulePresent(),
                 zygiskEvent = NativeBridge.readModuleStatus(),
@@ -95,7 +98,7 @@ class VirtualCameraController(private val context: Context) {
         NativeBridge.disable(context)
         _status.value = VirtualCameraStatus(
             state = VirtualCameraState.DISABLED,
-            message = "Usando camera padrao do sistema",
+            message = "Desligada — camera real liberada (apps de camera reiniciados)",
             usingRealCamera = true,
             moduleInstalled = NativeBridge.isModulePresent(),
             zygiskEvent = NativeBridge.readModuleStatus(),
@@ -107,7 +110,8 @@ class VirtualCameraController(private val context: Context) {
         NativeBridge.switchToReal(context)
         _status.value = _status.value.copy(
             usingRealCamera = true,
-            message = "Trocado para camera real",
+            message = "Modo REAL — camera padrao. Reabra o app da camera.",
+            state = VirtualCameraState.ENABLED,
         )
     }
 
@@ -115,7 +119,7 @@ class VirtualCameraController(private val context: Context) {
         NativeBridge.switchToVirtual(context)
         _status.value = _status.value.copy(
             usingRealCamera = false,
-            message = "Trocado para camera virtual",
+            message = "Modo VIRTUAL — video. Reabra o app da camera.",
             state = VirtualCameraState.ENABLED,
         )
     }
