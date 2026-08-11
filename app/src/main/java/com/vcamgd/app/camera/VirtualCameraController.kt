@@ -78,7 +78,7 @@ class VirtualCameraController(private val context: Context) {
         return if (configured) {
             _status.value = VirtualCameraStatus(
                 state = VirtualCameraState.ENABLED,
-                message = "Ativa (Magisk/Zygisk). Force-stop no app alvo e abra a camera.",
+                message = "Ativa (Camera1+Camera2). Force-stop na camera do sistema e abra de novo.",
                 usingRealCamera = false,
                 moduleInstalled = NativeBridge.isModulePresent(),
                 zygiskEvent = NativeBridge.readModuleStatus(),

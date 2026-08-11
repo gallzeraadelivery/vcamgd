@@ -24,9 +24,10 @@ powershell -ExecutionPolicy Bypass -File scripts\pack-module.ps1
 
 ## Como funciona
 
-- Zygisk injeta `hook.dex` + `libpine.so` nos apps  
-- Hook em `CameraDevice.createCaptureSession`  
-- MediaPlayer alimenta o Surface com arquivo/RTSP/HTTP  
+- Zygisk injeta `hook.dex` + `libpine.so` nos apps (inclui camera padrao do sistema)  
+- Hooks **Camera1** (`setPreviewTexture`/`setPreviewDisplay`) + **Camera2** (todas as variantes de session)  
+- MediaPlayer alimenta o Surface de preview com arquivo/RTSP/HTTP  
+
 
 ## Uso responsavel
 

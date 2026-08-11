@@ -6,6 +6,7 @@ import android.hardware.camera2.params.SessionConfiguration;
 import android.media.MediaPlayer;
 import android.util.Log;
 import android.view.Surface;
+import android.view.SurfaceHolder;
 
 import org.json.JSONObject;
 
@@ -14,10 +15,14 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicReference;
 
 import top.canyie.pine.Pine;
 import top.canyie.pine.callback.MethodHook;
 
+/**
+ * Hooks Camera1 + Camera2 so stock camera apps and 3rd-party apps get virtual feed.
+ */
 public final class HookEntry {
     private static final String TAG = "VCamGD-ZygiskHook";
     public static final String CONTROL_DIR = "/data/local/tmp/vcamgd";
@@ -27,6 +32,20 @@ public final class HookEntry {
     private static final String LEGACY_CONTROL = "/data/adb/vcamgd/control.json";
     private static final String LEGACY_VIDEO = "/data/adb/vcamgd/current.mp4";
     private static final String PINE_PATH = CONTROL_DIR + "/libpine.so";
+
+    private static final String[] CAMERA2_CLASSES = {
+            "android.hardware.camera2.CameraDevice",
+            "android.hardware.camera2.impl.CameraDeviceImpl",
+            "android.hardware.camera2.legacy.LegacyCameraDevice",
+    };
+
+    private static final String[] SESSION_METHODS = {
+            "createCaptureSession",
+            "createCaptureSessionByOutputConfigurations",
+            "createReprocessableCaptureSession",
+            "createConstrainedHighSpeedCaptureSession",
+            "createExtensionSession",
+    };
 
     static {
         try {
@@ -41,81 +60,147 @@ public final class HookEntry {
 
     private static MediaPlayer player;
     private static final ArrayList<SurfaceTexture> dummies = new ArrayList<>();
+    private static final AtomicReference<String> processHint = new AtomicReference<>("unknown");
 
     public static void install() {
+        install("unknown");
+    }
+
+    public static void install(String processName) {
+        if (processName != null && !processName.isEmpty()) {
+            processHint.set(processName);
+        }
         try {
-            writeStatus("installing");
-            Class<?> cameraDevice = Class.forName("android.hardware.camera2.CameraDevice");
-            for (Method m : cameraDevice.getDeclaredMethods()) {
-                if (!"createCaptureSession".equals(m.getName())) continue;
-                final Method method = m;
-                Pine.hook(method, new MethodHook() {
-                    @Override
-                    public void beforeCall(Pine.CallFrame callFrame) {
-                        try {
-                            handleCreateCaptureSession(callFrame);
-                        } catch (Throwable t) {
-                            Log.e(TAG, "beforeCall failed", t);
-                        }
-                    }
-                });
-                Log.i(TAG, "hooked " + method);
-            }
-            // Impl interna
-            hookClassMethods("android.hardware.camera2.impl.CameraDeviceImpl");
-            writeStatus("hooks_ready");
-            Log.i(TAG, "HookEntry.install done");
+            writeStatus("installing:" + processHint.get());
+            int hooked = 0;
+            hooked += hookCamera2();
+            hooked += hookCamera1();
+            writeStatus("hooks_ready:" + processHint.get() + ":n=" + hooked);
+            Log.i(TAG, "HookEntry.install done process=" + processHint.get() + " hooked=" + hooked);
         } catch (Throwable t) {
             Log.e(TAG, "install failed", t);
             writeStatus("install_error:" + t.getMessage());
         }
     }
 
-    private static void hookClassMethods(String className) {
+    private static int hookCamera2() {
+        int count = 0;
+        for (String className : CAMERA2_CLASSES) {
+            try {
+                Class<?> clazz = Class.forName(className);
+                for (Method m : clazz.getDeclaredMethods()) {
+                    String name = m.getName();
+                    boolean match = false;
+                    for (String sm : SESSION_METHODS) {
+                        if (sm.equals(name)) {
+                            match = true;
+                            break;
+                        }
+                    }
+                    if (!match) continue;
+                    final Method method = m;
+                    Pine.hook(method, new MethodHook() {
+                        @Override
+                        public void beforeCall(Pine.CallFrame callFrame) {
+                            try {
+                                handleCamera2Session(callFrame);
+                            } catch (Throwable t) {
+                                Log.e(TAG, "camera2 beforeCall failed", t);
+                            }
+                        }
+                    });
+                    count++;
+                    Log.i(TAG, "hooked " + className + "#" + method.getName());
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "skip class " + className + ": " + t.getMessage());
+            }
+        }
+        return count;
+    }
+
+    private static int hookCamera1() {
+        int count = 0;
         try {
-            Class<?> clazz = Class.forName(className);
-            for (Method m : clazz.getDeclaredMethods()) {
-                if (!"createCaptureSession".equals(m.getName())) continue;
-                Pine.hook(m, new MethodHook() {
+            Class<?> camera = Class.forName("android.hardware.Camera");
+            for (Method m : camera.getDeclaredMethods()) {
+                String name = m.getName();
+                if (!"setPreviewDisplay".equals(name)
+                        && !"setPreviewTexture".equals(name)
+                        && !"startPreview".equals(name)) {
+                    continue;
+                }
+                final Method method = m;
+                Pine.hook(method, new MethodHook() {
                     @Override
                     public void beforeCall(Pine.CallFrame callFrame) {
                         try {
-                            handleCreateCaptureSession(callFrame);
-                        } catch (Throwable ignored) {
+                            handleCamera1(method.getName(), callFrame);
+                        } catch (Throwable t) {
+                            Log.e(TAG, "camera1 beforeCall failed", t);
                         }
                     }
                 });
+                count++;
+                Log.i(TAG, "hooked Camera#" + name);
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            Log.w(TAG, "Camera1 hook skipped: " + t.getMessage());
+        }
+        return count;
+    }
+
+    private static void handleCamera1(String methodName, Pine.CallFrame frame) throws Throwable {
+        if (!shouldInject()) return;
+        Object[] args = frame.args;
+        if ("setPreviewDisplay".equals(methodName) && args != null && args.length > 0) {
+            SurfaceHolder holder = (SurfaceHolder) args[0];
+            if (holder == null) return;
+            Surface real = holder.getSurface();
+            if (real == null || !real.isValid()) return;
+            startOnSurfaces(singleton(real));
+            // Keep real SurfaceHolder so Camera1 still "opens"; frames come from MediaPlayer.
+            // Some devices need a dummy: swap holder is not possible; rely on MediaPlayer overlay.
+            writeStatus("camera1_preview_display:" + processHint.get());
+            return;
+        }
+        if ("setPreviewTexture".equals(methodName) && args != null && args.length > 0) {
+            SurfaceTexture tex = (SurfaceTexture) args[0];
+            if (tex == null) return;
+            Surface real = new Surface(tex);
+            startOnSurfaces(singleton(real));
+            // Replace with dummy texture so HAL frames go nowhere; MediaPlayer drives real.
+            SurfaceTexture dummy = newDummyTexture(1280, 720);
+            frame.args[0] = dummy;
+            writeStatus("camera1_preview_texture:" + processHint.get());
+            return;
+        }
+        if ("startPreview".equals(methodName)) {
+            // Re-assert feeder if already configured via setPreview*
+            if (player == null && shouldInject()) {
+                writeStatus("camera1_start_preview_no_surface:" + processHint.get());
+            } else if (player != null) {
+                writeStatus("camera1_start_preview:" + processHint.get());
+            }
         }
     }
 
-    private static void handleCreateCaptureSession(Pine.CallFrame frame) throws Throwable {
+    private static void handleCamera2Session(Pine.CallFrame frame) throws Throwable {
         if (!shouldInject()) return;
         Object[] args = frame.args;
         if (args == null || args.length == 0) return;
 
-        if (args[0] instanceof List) {
-            @SuppressWarnings("unchecked")
-            List<Object> list = (List<Object>) args[0];
-            ArrayList<Surface> surfaces = new ArrayList<>();
-            for (Object o : list) {
-                if (o instanceof Surface) surfaces.add((Surface) o);
-            }
-            if (surfaces.isEmpty()) return;
-            startOnSurfaces(surfaces);
-            frame.args[0] = createDummySurfaces(surfaces.size());
-            return;
+        Object primary = args[0];
+        ArrayList<Surface> surfaces = extractSurfaces(primary);
+        if (surfaces.isEmpty() && args.length > 1) {
+            surfaces = extractSurfaces(args[1]);
         }
+        if (surfaces.isEmpty()) return;
 
-        if (args[0] instanceof SessionConfiguration) {
-            SessionConfiguration config = (SessionConfiguration) args[0];
-            ArrayList<Surface> surfaces = new ArrayList<>();
-            for (OutputConfiguration out : config.getOutputConfigurations()) {
-                surfaces.addAll(out.getSurfaces());
-            }
-            if (surfaces.isEmpty()) return;
-            startOnSurfaces(surfaces);
+        startOnSurfaces(pickPreviewSurfaces(surfaces));
+
+        if (primary instanceof SessionConfiguration) {
+            SessionConfiguration config = (SessionConfiguration) primary;
             ArrayList<OutputConfiguration> outs = new ArrayList<>();
             for (Surface dummy : createDummySurfaces(surfaces.size())) {
                 outs.add(new OutputConfiguration(dummy));
@@ -126,7 +211,81 @@ public final class HookEntry {
                     config.getExecutor(),
                     config.getStateCallback()
             );
+            writeStatus("camera2_sessioncfg:" + processHint.get() + ":s=" + surfaces.size());
+            return;
         }
+
+        if (primary instanceof List) {
+            @SuppressWarnings("unchecked")
+            List<Object> list = (List<Object>) primary;
+            boolean outputConfigs = !list.isEmpty() && list.get(0) instanceof OutputConfiguration;
+            if (outputConfigs) {
+                ArrayList<OutputConfiguration> outs = new ArrayList<>();
+                for (Surface dummy : createDummySurfaces(surfaces.size())) {
+                    outs.add(new OutputConfiguration(dummy));
+                }
+                frame.args[0] = outs;
+                writeStatus("camera2_outcfg:" + processHint.get() + ":s=" + surfaces.size());
+            } else {
+                frame.args[0] = createDummySurfaces(surfaces.size());
+                writeStatus("camera2_list:" + processHint.get() + ":s=" + surfaces.size());
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ArrayList<Surface> extractSurfaces(Object arg) {
+        ArrayList<Surface> surfaces = new ArrayList<>();
+        if (arg == null) return surfaces;
+        if (arg instanceof Surface) {
+            surfaces.add((Surface) arg);
+            return surfaces;
+        }
+        if (arg instanceof List) {
+            for (Object o : (List<Object>) arg) {
+                if (o instanceof Surface) {
+                    surfaces.add((Surface) o);
+                } else if (o instanceof OutputConfiguration) {
+                    surfaces.addAll(((OutputConfiguration) o).getSurfaces());
+                }
+            }
+            return surfaces;
+        }
+        if (arg instanceof SessionConfiguration) {
+            for (OutputConfiguration out : ((SessionConfiguration) arg).getOutputConfigurations()) {
+                surfaces.addAll(out.getSurfaces());
+            }
+        }
+        return surfaces;
+    }
+
+    /**
+     * Prefer Surfaces that look like preview (SurfaceTexture-backed / first valid).
+     * Stock cameras often put ImageReader first; feeding only that shows black preview.
+     */
+    private static ArrayList<Surface> pickPreviewSurfaces(List<Surface> all) {
+        ArrayList<Surface> preferred = new ArrayList<>();
+        for (Surface s : all) {
+            if (s != null && s.isValid()) preferred.add(s);
+        }
+        if (preferred.isEmpty()) return preferred;
+        // Feed the largest-index valid surface first (often preview), then first.
+        ArrayList<Surface> ordered = new ArrayList<>();
+        ordered.add(preferred.get(preferred.size() - 1));
+        if (preferred.size() > 1) {
+            ordered.add(preferred.get(0));
+        }
+        // Also try middle ones for multi-preview OEM cams
+        for (int i = 1; i < preferred.size() - 1; i++) {
+            ordered.add(preferred.get(i));
+        }
+        return ordered;
+    }
+
+    private static List<Surface> singleton(Surface s) {
+        ArrayList<Surface> list = new ArrayList<>(1);
+        list.add(s);
+        return list;
     }
 
     private static boolean shouldInject() {
@@ -164,16 +323,29 @@ public final class HookEntry {
         }
         stopPlayer();
         try {
+            // MediaPlayer drives one Surface; pick first preferred (preview).
+            Surface target = null;
+            for (Surface s : surfaces) {
+                if (s != null && s.isValid()) {
+                    target = s;
+                    break;
+                }
+            }
+            if (target == null) {
+                writeStatus("no_valid_surface");
+                return;
+            }
             MediaPlayer mp = new MediaPlayer();
             String source = String.valueOf(src);
             mp.setDataSource(source);
             boolean network = source.startsWith("rtsp") || source.startsWith("http");
             mp.setLooping(!network || source.startsWith("http"));
-            mp.setSurface(surfaces.get(0));
+            mp.setSurface(target);
+            mp.setVolume(0f, 0f);
             mp.setOnPreparedListener(p -> {
                 try {
                     p.start();
-                    writeStatus("feeding:" + source);
+                    writeStatus("feeding:" + processHint.get() + ":" + source);
                 } catch (Throwable t) {
                     writeStatus("start_error:" + t.getMessage());
                 }
@@ -193,12 +365,17 @@ public final class HookEntry {
     private static List<Surface> createDummySurfaces(int count) {
         ArrayList<Surface> out = new ArrayList<>();
         for (int i = 0; i < count; i++) {
-            SurfaceTexture st = new SurfaceTexture(false);
-            st.setDefaultBufferSize(1280, 720);
-            dummies.add(st);
-            out.add(new Surface(st));
+            out.add(new Surface(newDummyTexture(1280, 720)));
         }
         return out;
+    }
+
+    private static SurfaceTexture newDummyTexture(int w, int h) {
+        SurfaceTexture st = new SurfaceTexture(0);
+        st.detachFromGLContext();
+        st.setDefaultBufferSize(w, h);
+        dummies.add(st);
+        return st;
     }
 
     private static void stopPlayer() {
@@ -241,7 +418,8 @@ public final class HookEntry {
             String safe = msg.replace("\"", "'");
             java.nio.file.Files.write(
                     new File(STATUS).toPath(),
-                    ("{\"feeder\":\"" + safe + "\",\"ts\":" + System.currentTimeMillis() + "}").getBytes()
+                    ("{\"feeder\":\"" + safe + "\",\"pkg\":\"" + processHint.get()
+                            + "\",\"ts\":" + System.currentTimeMillis() + "}").getBytes()
             );
         } catch (Throwable ignored) {
         }

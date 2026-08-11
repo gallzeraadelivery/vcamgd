@@ -96,11 +96,17 @@ public:
             env->ReleaseStringUTFChars(args->nice_name, process);
         }
 
-        // Skip isolated / heavy system processes
-        if (process_name.find(":") != std::string::npos ||
-            process_name == "system" ||
-            process_name.rfind("com.android.", 0) == 0) {
-            // still allow camera apps under com.android - actually skip most system
+        // Skip only processes that cannot host camera UI / would crash with ART hooks.
+        // IMPORTANT: do NOT skip com.android.camera* / Google Camera / OEM camera apps.
+        const bool isolated = process_name.find(':') != std::string::npos;
+        const bool system_server = process_name == "system" || process_name == "system_server";
+        const bool webview = process_name.find("webview") != std::string::npos;
+        const bool self = process_name == "com.vcamgd.app";
+        if (isolated || system_server || webview || self) {
+            api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+            should_inject = false;
+            LOGI("skip process=%s", process_name.c_str());
+            return;
         }
 
         int fd = api->connectCompanion();
@@ -119,12 +125,13 @@ public:
             close(fd);
         }
 
-        // Always keep module for camera injection path (hooks check enable at runtime)
+        // Inject into all remaining apps (stock camera included). Enable checked at runtime.
         should_inject = !dex_bytes.empty();
         if (!should_inject) {
             api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
         }
-        LOGI("preAppSpecialize process=%s dex=%zu", process_name.c_str(), dex_bytes.size());
+        LOGI("preAppSpecialize process=%s dex=%zu inject=%d",
+             process_name.c_str(), dex_bytes.size(), should_inject ? 1 : 0);
     }
 
     void postAppSpecialize(const AppSpecializeArgs *args) override {
@@ -237,9 +244,17 @@ private:
             return false;
         }
 
-        jmethodID install = e->GetStaticMethodID(static_cast<jclass>(hookClass), "install", "()V");
-        if (!install) return false;
-        e->CallStaticVoidMethod(static_cast<jclass>(hookClass), install);
+        // Prefer install(String processName) so status shows which app got hooks
+        jmethodID installWithName = e->GetStaticMethodID(
+                static_cast<jclass>(hookClass), "install", "(Ljava/lang/String;)V");
+        if (installWithName) {
+            jstring pname = e->NewStringUTF(process_name.c_str());
+            e->CallStaticVoidMethod(static_cast<jclass>(hookClass), installWithName, pname);
+        } else {
+            jmethodID install = e->GetStaticMethodID(static_cast<jclass>(hookClass), "install", "()V");
+            if (!install) return false;
+            e->CallStaticVoidMethod(static_cast<jclass>(hookClass), install);
+        }
         if (e->ExceptionCheck()) {
             e->ExceptionDescribe();
             e->ExceptionClear();
