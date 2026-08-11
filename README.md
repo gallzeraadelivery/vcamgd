@@ -1,48 +1,48 @@
 # VCamGD / KingVCam
 
-Camera virtual com **APK unico** (como o OVCAM): o motor Zygisk vai **embutido** e instala sozinho com root.
+Camera virtual com **APK unico** + **root**: motor nativo **vcplax** / `libvc` / ShadowHook (build liberado), sem depender de LSPosed nem de ZIP Magisk.
 
-**LSPosed nao e necessario.** Alvo: **Android 12–16**.
+**Alvo:** Android 12–16.
 
 Repositorio: https://github.com/gallzeraadelivery/vcamgd  
 Releases: https://github.com/gallzeraadelivery/vcamgd/releases
 
 ## Instalacao (so o APK)
 
-1. Magisk (ou KernelSU) com **Zygisk ON**  
-2. Instalar **apenas** `vcamgd-app-debug.apk`  
-3. Abrir KingVCam → conceder **root**  
-4. O app instala o motor automaticamente → **reboot uma vez**  
-5. Abrir de novo → video → ativar virtual  
+1. Dispositivo **root** (`su`)  
+2. Instalar `vcamgd-app-debug.apk`  
+3. Abrir KingVCam → conceder root  
+4. O app extrai o motor e sobe `/data/vcplax` (Binder)  
+5. Escolher video/URL → ativar virtual → abrir a camera do telefone  
 
-Nao precisa baixar/instalar ZIP Magisk manualmente (o ZIP ainda existe no release so para avancados).
+Reboot normalmente **nao** e necessario no motor vcplax.
 
-## Motor (alinhado ao OVCAM)
+## Motor (v0.8+)
 
-O APK de referencia usa um `.so` criptografado + JNI (`a.b.N`). Nao copiamos o binario
-(assinatura/licenca). Replicamos o **comportamento**:
+Fluxo espelhado do APK base liberado:
 
-1. APK unico instala o motor (Zygisk) sozinho  
-2. Injecao **soft** por padrao: alimenta o preview **depois** da sessao Camera abrir  
-   (nao troca Surfaces antes — evita `03400001` na Motorola)  
-3. `inject=hard` opcional no `control.json` para apps que exigem bloquear o HAL  
+1. Extrai `libvc.so`, `libshadowhook.so`, `vcplax.so` dos assets  
+2. Root: copia para `/data/libvc.so`, `/data/libvc++.so`, `/data/vcplax`  
+3. Executa `/data/vcplax <ServerName>&`  
+4. Controle via Binder `com.xiaomi.vlive.IMyBinderService` (play/stop)
+
+O modulo Zygisk/Pine antigo permanece no repo como legado opcional.
 
 ## Real vs Virtual
 
 | Modo | Comportamento |
 |------|----------------|
-| desligado / real | Zero hooks — camera OEM |
-| virtual | Inject Camera1/Camera2 + video no preview |
+| desligado / real | `stopPlay` — camera OEM |
+| virtual | Daemon injeta feed (mp4 / rtmp/rtsp/http) |
 
 ## Build
 
 ```bat
-powershell -ExecutionPolicy Bypass -File scripts\pack-module.ps1
 gradlew.bat :app:assembleDebug
 ```
 
-O `pack-module.ps1` gera o ZIP e copia para `app/src/main/assets/vcamgd-magisk.zip`.
+Libs do motor em `app/src/main/assets/vcam-engine/{arm64-v8a,armeabi-v7a}/`.
 
 ## Uso responsavel
 
-Apenas estudo/pesquisa.
+Apenas estudo/pesquisa. Use apenas engines/binarios que voce tenha direito de usar.

@@ -7,11 +7,14 @@
 !module/zygisk/*.so
 !module/**/*.so
 !app/src/main/assets/*.zip
+!app/src/main/assets/vcam-engine/**/*.so
 
 # Descompilacao / referencia local
 /decompiled/
 /apk-extracted/
 /apktool-out/
+/base-decompiled/
+/base-extracted/
 /.jadx/
 hs_err_pid*.log
 vcama16.apk

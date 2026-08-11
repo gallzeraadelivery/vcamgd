@@ -11,7 +11,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import com.vcamgd.app.VCamApp
-import com.vcamgd.app.camera.ModuleInstaller
+import com.vcamgd.app.camera.VcplaxEngine
 import com.vcamgd.app.camera.VirtualCameraController
 import com.vcamgd.app.camera.VirtualCameraStatus
 import com.vcamgd.app.data.AppPreferences
@@ -30,7 +30,7 @@ data class MainUiState(
     val camera: VirtualCameraStatus = VirtualCameraStatus(),
     val busy: Boolean = false,
     val message: String? = null,
-    /** true = acabou de instalar/atualizar o modulo embutido; UI deve pedir reboot */
+    /** legado Zygisk — vcplax nao precisa reboot */
     val needsReboot: Boolean = false,
     val moduleMessage: String? = null,
 )
@@ -54,7 +54,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         refresh()
-        ensureEmbeddedModule()
+        warmVcplax()
     }
 
     fun refresh() {
@@ -65,46 +65,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun ensureEmbeddedModule() {
+    /** Prepara motor vcplax (copia libs + sobe daemon). Sem Magisk ZIP. */
+    fun warmVcplax() {
         viewModelScope.launch {
-            _uiState.postValue(_uiState.value?.copy(busy = true, moduleMessage = "Instalando motor Zygisk..."))
+            _uiState.postValue(_uiState.value?.copy(busy = true, moduleMessage = "Preparando motor vcplax..."))
             val result = withContext(Dispatchers.IO) {
-                ModuleInstaller.ensureInstalled(getApplication())
+                VcplaxEngine.ensureRunning(getApplication())
             }
             when (result) {
-                is ModuleInstaller.Result.AlreadyInstalled -> {
+                is VcplaxEngine.Result.Ok -> {
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
                             needsReboot = false,
-                            moduleMessage = "Motor Zygisk pronto (embutido no APK)",
+                            moduleMessage = "Motor vcplax pronto (APK + root)",
                         ),
                     )
                     controller.refreshModuleStatus()
                 }
-                is ModuleInstaller.Result.InstalledNeedsReboot -> {
-                    _uiState.postValue(
-                        _uiState.value?.copy(
-                            busy = false,
-                            needsReboot = true,
-                            moduleMessage = "Motor instalado. Reinicie o telefone uma vez.",
-                        ),
-                    )
-                    toast("Modulo instalado — reinicie o telefone")
-                }
-                is ModuleInstaller.Result.Failed -> {
+                is VcplaxEngine.Result.Failed -> {
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
                             needsReboot = false,
-                            moduleMessage = "Falha: ${result.reason}",
+                            moduleMessage = "Motor: ${result.reason}",
                         ),
                     )
-                    toast("Falha ao instalar motor: ${result.reason}")
                 }
             }
         }
     }
+
+    /** Compat com UI antiga (botao reinstalar). */
+    fun ensureEmbeddedModule() = warmVcplax()
 
     fun clearNeedsReboot() {
         _uiState.postValue(_uiState.value?.copy(needsReboot = false))
@@ -134,20 +127,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _uiState.postValue(_uiState.value?.copy(busy = true))
             if (enable) {
-                val install = withContext(Dispatchers.IO) {
-                    ModuleInstaller.ensureInstalled(getApplication())
+                val boot = withContext(Dispatchers.IO) {
+                    VcplaxEngine.ensureRunning(getApplication())
                 }
-                if (install is ModuleInstaller.Result.Failed) {
+                if (boot is VcplaxEngine.Result.Failed) {
                     _uiState.postValue(_uiState.value?.copy(busy = false))
-                    toast("Instale Magisk+Zygisk / conceda root: ${install.reason}")
-                    return@launch
-                }
-                if (install is ModuleInstaller.Result.InstalledNeedsReboot) {
-                    settings.setVirtualCameraEnabled(false)
-                    _uiState.postValue(
-                        _uiState.value?.copy(busy = false, needsReboot = true),
-                    )
-                    toast("Reinicie o telefone antes de ativar a virtual")
+                    toast("Root/motor: ${boot.reason}")
                     return@launch
                 }
             }

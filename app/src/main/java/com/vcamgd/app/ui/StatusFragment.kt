@@ -27,13 +27,13 @@ class StatusFragment : Fragment() {
         binding.btnRefresh.setOnClickListener { vm.refresh() }
         vm.uiState.observe(viewLifecycleOwner) { state ->
             binding.rootStatus.text = "Root\n${state.root.detail}"
-            binding.moduleStatus.text = "Modulo\n" + if (state.camera.moduleInstalled) {
-                "Instalado (Zygisk)"
+            binding.moduleStatus.text = "Motor\n" + if (state.camera.moduleInstalled) {
+                "vcplax binder OK"
             } else {
-                "Nao encontrado em /data/adb/modules/vcamgd"
+                "parado (ative virtual ou abra o app com root)"
             }
             binding.cameraStatus.text = "Camera virtual\n${state.camera.message}"
-            binding.activationStatus.text = "Zygisk\n" + state.camera.zygiskEvent.ifBlank {
+            binding.activationStatus.text = "Evento\n" + state.camera.zygiskEvent.ifBlank {
                 if (state.prefs.activated) "Ativado" else "Nao ativado"
             }
             binding.appVersion.text =

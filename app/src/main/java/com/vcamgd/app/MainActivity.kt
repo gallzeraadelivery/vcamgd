@@ -36,20 +36,15 @@ class MainActivity : AppCompatActivity() {
         binding.bottomNav.setupWithNavController(navHost.navController)
 
         vm = ViewModelProvider(this)[MainViewModel::class.java]
-        com.vcamgd.app.camera.EngineFacade.warmUp(this)
-        // Moto G60 / OEM: soft inject (OVCAM-like). Hard so sob demanda.
-        com.vcamgd.app.camera.EngineFacade.setInjectStyle(
-            com.vcamgd.app.camera.EngineFacade.InjectStyle.SOFT,
-        )
+        // Motor primario: vcplax (warm no ViewModel). Zygisk legado fica opcional.
         vm.uiState.observe(this) { state ->
             if (state.needsReboot && !rebootDialogShown) {
                 rebootDialogShown = true
                 AlertDialog.Builder(this)
                     .setTitle("Reinicie o telefone")
                     .setMessage(
-                        "O KingVCam instalou o motor Zygisk automaticamente (como o OVCAM).\n\n" +
-                            "Reinicie uma vez para a camera virtual funcionar.\n" +
-                            "Nao e preciso instalar ZIP Magisk manualmente.",
+                        "Reinicie uma vez se o sistema pedir (legado Zygisk).\n" +
+                            "Com o motor vcplax, normalmente nao precisa de reboot.",
                     )
                     .setPositiveButton("OK") { _, _ -> vm.clearNeedsReboot() }
                     .setCancelable(false)

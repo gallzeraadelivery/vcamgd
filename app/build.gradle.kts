@@ -12,8 +12,8 @@ android {
         // Android 12 (API 31) ate 16 (API 36)
         minSdk = 31
         targetSdk = 36
-        versionCode = 11
-        versionName = "0.7.0"
+        versionCode = 12
+        versionName = "0.8.0"
     }
 
     buildTypes {
