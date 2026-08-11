@@ -24,7 +24,7 @@ if ($LASTEXITCODE -ne 0) { throw "javac failed" }
 Write-Host "Running d8..."
 $jarOut = Join-Path $out "hook-classes.jar"
 & jar cf $jarOut -C $classes .
-& d8.bat --min-api 26 --output $out $jarOut $pineJar
+& d8.bat --min-api 31 --output $out $jarOut $pineJar
 if ($LASTEXITCODE -ne 0) { throw "d8 failed" }
 
 $dex = Join-Path $out "classes.dex"

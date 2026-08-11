@@ -1,8 +1,10 @@
 package com.vcamgd.hook;
 
+import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
+import android.media.ImageReader;
 import android.media.MediaPlayer;
 import android.util.Log;
 import android.view.Surface;
@@ -63,6 +65,7 @@ public final class HookEntry {
 
     private static MediaPlayer player;
     private static final ArrayList<SurfaceTexture> dummies = new ArrayList<>();
+    private static final ArrayList<ImageReader> dummyReaders = new ArrayList<>();
     private static final AtomicReference<String> processHint = new AtomicReference<>("unknown");
 
     public static void install() {
@@ -354,17 +357,31 @@ public final class HookEntry {
     private static List<Surface> createDummySurfaces(int count) {
         ArrayList<Surface> out = new ArrayList<>();
         for (int i = 0; i < count; i++) {
-            out.add(new Surface(newDummyTexture(1280, 720)));
+            out.add(newHalCompatibleSurface(1280, 720));
         }
         return out;
     }
 
-    private static SurfaceTexture newDummyTexture(int w, int h) {
-        SurfaceTexture st = new SurfaceTexture(0);
+    /**
+     * Motorola/Qualcomm HAL rejects SurfaceTexture(0). Prefer ImageReader surfaces
+     * (valid producer for camera) — required to avoid errors like 03400001 on Moto G60.
+     */
+    private static Surface newHalCompatibleSurface(int w, int h) {
         try {
-            st.detachFromGLContext();
-        } catch (Throwable ignored) {
+            ImageReader reader = ImageReader.newInstance(w, h, ImageFormat.YUV_420_888, 2);
+            dummyReaders.add(reader);
+            Surface s = reader.getSurface();
+            if (s != null && s.isValid()) return s;
+        } catch (Throwable t) {
+            Log.w(TAG, "ImageReader dummy failed, fallback SurfaceTexture", t);
         }
+        SurfaceTexture st = newDummyTexture(w, h);
+        return new Surface(st);
+    }
+
+    private static SurfaceTexture newDummyTexture(int w, int h) {
+        // API 26+: detached SurfaceTexture (not texture name 0 — breaks Moto HAL)
+        SurfaceTexture st = new SurfaceTexture(false);
         st.setDefaultBufferSize(w, h);
         dummies.add(st);
         return st;
@@ -386,6 +403,13 @@ public final class HookEntry {
             }
         }
         dummies.clear();
+        for (ImageReader r : dummyReaders) {
+            try {
+                r.close();
+            } catch (Throwable ignored) {
+            }
+        }
+        dummyReaders.clear();
     }
 
     private static JSONObject readControl() {

@@ -1,6 +1,6 @@
 id=vcamgd
 name=VCamGD Virtual Camera
-version=v0.5.3
-versionCode=8
+version=v0.5.4
+versionCode=9
 author=vcamgd
-description=Inject only in virtual mode; hard HAL dummies. Real mode = zero hooks.
+description=Android 12-16. Boot=real camera. Moto-safe ImageReader dummies. Virtual only when enabled.

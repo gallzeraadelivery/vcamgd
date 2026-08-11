@@ -44,9 +44,12 @@ object NativeBridge {
         "com.huawei.camera",
         "com.oplus.camera",
         "com.oneplus.camera",
+        // Motorola (G60 / family)
         "com.motorola.camera",
         "com.motorola.camera2",
         "com.motorola.camera3",
+        "com.motorola.camera2.selectivemotion",
+        "com.motorola.actions",
         "com.sonyericsson.android.camera",
         "com.transsion.camera",
     )
@@ -195,14 +198,20 @@ object NativeBridge {
         if (ok) restartCameraApps()
     }
 
-    /** Force-stop apps de camera para a nova sessao ler o modo atual. */
+    /**
+     * Force-stop apps de camera + reinicia HAL (recupera Motorola 03400001).
+     */
     fun restartCameraApps() {
         val cmds = CAMERA_PACKAGES.joinToString("; ") { "am force-stop $it 2>/dev/null" }
         val script =
             "$cmds; " +
-                // Tambem tenta descobrir pacotes com CAMERA permission em uso
                 "for p in \$(dumpsys media.camera 2>/dev/null | grep -oE 'com\\.[a-zA-Z0-9_.]+' | sort -u); do " +
                 "am force-stop \"\$p\" 2>/dev/null; done; " +
+                "killall cameraserver 2>/dev/null; " +
+                "killall android.hardware.camera.provider@2.4-service 2>/dev/null; " +
+                "killall android.hardware.camera.provider@2.4-service_64 2>/dev/null; " +
+                "killall vendor.qti.camera.provider@2.4-service_64 2>/dev/null; " +
+                "killall vendor.qti.camera.provider-service_64 2>/dev/null; " +
                 "echo OK"
         val out = shellSu(script)
         Log.i(TAG, "restartCameraApps: ${out.take(200)}")

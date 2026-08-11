@@ -124,7 +124,12 @@ public:
         const bool system_server = process_name == "system" || process_name == "system_server";
         const bool webview = process_name.find("webview") != std::string::npos;
         const bool self = process_name == "com.vcamgd.app";
-        if (isolated || system_server || webview || self) {
+        // Nao injetar em providers/HAL da camera (quebra Moto com 03400001)
+        const bool camera_hal =
+                process_name.find("camera.provider") != std::string::npos ||
+                process_name.find("cameraserver") != std::string::npos ||
+                process_name.find("vendor.qti.camera") != std::string::npos;
+        if (isolated || system_server || webview || self || camera_hal) {
             api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
             should_inject = false;
             return;
