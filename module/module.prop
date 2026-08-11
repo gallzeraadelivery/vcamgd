@@ -1,6 +1,6 @@
 id=vcamgd
 name=VCamGD Virtual Camera
-version=v0.5.4
-versionCode=9
+version=v0.6.0
+versionCode=10
 author=vcamgd
-description=Android 12-16. Boot=real camera. Moto-safe ImageReader dummies. Virtual only when enabled.
+description=APK-only install: embeds Zygisk engine. Android 12-16. Moto-safe.

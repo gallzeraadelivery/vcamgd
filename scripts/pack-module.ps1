@@ -45,3 +45,9 @@ $zipFile.Dispose()
 
 Write-Host "Packed: $zip"
 (Get-Item $zip).Length
+
+# Embed into app assets (APK-only UX like OVCAM)
+$assets = Join-Path $root "app\src\main\assets"
+New-Item -ItemType Directory -Force -Path $assets | Out-Null
+Copy-Item $zip (Join-Path $assets "vcamgd-magisk.zip") -Force
+Write-Host "Embedded: app\src\main\assets\vcamgd-magisk.zip"

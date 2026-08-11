@@ -6,6 +6,7 @@
 !module/dex/hook.dex
 !module/zygisk/*.so
 !module/**/*.so
+!app/src/main/assets/*.zip
 
 # Descompilacao / referencia local
 /decompiled/

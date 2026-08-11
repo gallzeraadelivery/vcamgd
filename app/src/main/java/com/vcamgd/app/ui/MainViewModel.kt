@@ -11,6 +11,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import com.vcamgd.app.VCamApp
+import com.vcamgd.app.camera.ModuleInstaller
 import com.vcamgd.app.camera.VirtualCameraController
 import com.vcamgd.app.camera.VirtualCameraStatus
 import com.vcamgd.app.data.AppPreferences
@@ -18,8 +19,10 @@ import com.vcamgd.app.data.VideoSourceType
 import com.vcamgd.app.root.RootChecker
 import com.vcamgd.app.root.RootStatus
 import com.vcamgd.app.service.OverlayService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class MainUiState(
     val prefs: AppPreferences = AppPreferences(),
@@ -27,6 +30,9 @@ data class MainUiState(
     val camera: VirtualCameraStatus = VirtualCameraStatus(),
     val busy: Boolean = false,
     val message: String? = null,
+    /** true = acabou de instalar/atualizar o modulo embutido; UI deve pedir reboot */
+    val needsReboot: Boolean = false,
+    val moduleMessage: String? = null,
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -48,6 +54,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         refresh()
+        ensureEmbeddedModule()
     }
 
     fun refresh() {
@@ -56,6 +63,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             controller.refreshModuleStatus()
             _uiState.postValue(_uiState.value?.copy(root = root, message = null))
         }
+    }
+
+    fun ensureEmbeddedModule() {
+        viewModelScope.launch {
+            _uiState.postValue(_uiState.value?.copy(busy = true, moduleMessage = "Instalando motor Zygisk..."))
+            val result = withContext(Dispatchers.IO) {
+                ModuleInstaller.ensureInstalled(getApplication())
+            }
+            when (result) {
+                is ModuleInstaller.Result.AlreadyInstalled -> {
+                    _uiState.postValue(
+                        _uiState.value?.copy(
+                            busy = false,
+                            needsReboot = false,
+                            moduleMessage = "Motor Zygisk pronto (embutido no APK)",
+                        ),
+                    )
+                    controller.refreshModuleStatus()
+                }
+                is ModuleInstaller.Result.InstalledNeedsReboot -> {
+                    _uiState.postValue(
+                        _uiState.value?.copy(
+                            busy = false,
+                            needsReboot = true,
+                            moduleMessage = "Motor instalado. Reinicie o telefone uma vez.",
+                        ),
+                    )
+                    toast("Modulo instalado — reinicie o telefone")
+                }
+                is ModuleInstaller.Result.Failed -> {
+                    _uiState.postValue(
+                        _uiState.value?.copy(
+                            busy = false,
+                            needsReboot = false,
+                            moduleMessage = "Falha: ${result.reason}",
+                        ),
+                    )
+                    toast("Falha ao instalar motor: ${result.reason}")
+                }
+            }
+        }
+    }
+
+    fun clearNeedsReboot() {
+        _uiState.postValue(_uiState.value?.copy(needsReboot = false))
     }
 
     fun setSourceType(type: VideoSourceType) {
@@ -81,6 +133,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleVirtualCamera(enable: Boolean) {
         viewModelScope.launch {
             _uiState.postValue(_uiState.value?.copy(busy = true))
+            if (enable) {
+                val install = withContext(Dispatchers.IO) {
+                    ModuleInstaller.ensureInstalled(getApplication())
+                }
+                if (install is ModuleInstaller.Result.Failed) {
+                    _uiState.postValue(_uiState.value?.copy(busy = false))
+                    toast("Instale Magisk+Zygisk / conceda root: ${install.reason}")
+                    return@launch
+                }
+                if (install is ModuleInstaller.Result.InstalledNeedsReboot) {
+                    settings.setVirtualCameraEnabled(false)
+                    _uiState.postValue(
+                        _uiState.value?.copy(busy = false, needsReboot = true),
+                    )
+                    toast("Reinicie o telefone antes de ativar a virtual")
+                    return@launch
+                }
+            }
             val prefs = _uiState.value?.prefs ?: AppPreferences()
             val result = if (enable) {
                 controller.enable(
@@ -93,7 +163,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             settings.setVirtualCameraEnabled(result.isSuccess && enable)
             _uiState.postValue(_uiState.value?.copy(busy = false))
-            toast(result.exceptionOrNull()?.message ?: if (enable) "Solicitado" else "Desligado")
+            toast(result.exceptionOrNull()?.message ?: if (enable) "Virtual solicitada" else "Desligado")
         }
     }
 

@@ -34,7 +34,7 @@ class VirtualCameraController(private val context: Context) {
             moduleInstalled = installed,
             zygiskEvent = event,
             message = when {
-                !installed -> "Modulo de camera virtual nao instalado"
+                !installed -> "Motor ainda nao ativo — abra o app com root (instala sozinho) e reinicie"
                 _status.value.state == VirtualCameraState.ENABLED && !_status.value.usingRealCamera ->
                     "Modo virtual ativo"
                 _status.value.state == VirtualCameraState.ENABLED && _status.value.usingRealCamera ->

@@ -1,38 +1,37 @@
 # VCamGD / KingVCam
 
-Camera virtual **so com Magisk/Zygisk** (Pine). **LSPosed nao e necessario.**
+Camera virtual com **APK unico** (como o OVCAM): o motor Zygisk vai **embutido** e instala sozinho com root.
 
-Alvo: **Android 12–16** (API 31–36), incluindo **Motorola Moto G60**.
+**LSPosed nao e necessario.** Alvo: **Android 12–16**.
 
 Repositorio: https://github.com/gallzeraadelivery/vcamgd  
 Releases: https://github.com/gallzeraadelivery/vcamgd/releases
 
-## Instalacao
+## Instalacao (so o APK)
 
-1. Magisk + **Zygisk ON**  
-2. Instalar `vcamgd-magisk-zygisk.zip` → **reboot**  
-3. Instalar `vcamgd-app-debug.apk` (KingVCam)  
-4. Abrir o app (root) — **nao** ligue a virtual ainda  
-5. Teste a **camera nativa** (deve abrir)  
-6. So entao: video → ativar virtual → reabrir camera  
+1. Magisk (ou KernelSU) com **Zygisk ON**  
+2. Instalar **apenas** `vcamgd-app-debug.apk`  
+3. Abrir KingVCam → conceder **root**  
+4. O app instala o motor automaticamente → **reboot uma vez**  
+5. Abrir de novo → video → ativar virtual  
 
-IPC: `/data/local/tmp/vcamgd/`
+Nao precisa baixar/instalar ZIP Magisk manualmente (o ZIP ainda existe no release so para avancados).
 
 ## Real vs Virtual
 
 | Modo | Comportamento |
 |------|----------------|
-| `mode=real` / desligado | Zygisk **nao injeta** — camera OEM intacta |
-| `mode=virtual` | Hard inject com Surfaces via **ImageReader** (evita `03400001` da Moto) |
-
-A cada **boot**, o modulo forca `mode=real` (seguro). Virtual precisa ser reativada no app.
+| desligado / real | Zero hooks — camera OEM |
+| virtual | Inject Camera1/Camera2 + video no preview |
 
 ## Build
 
 ```bat
-gradlew.bat :app:assembleDebug
 powershell -ExecutionPolicy Bypass -File scripts\pack-module.ps1
+gradlew.bat :app:assembleDebug
 ```
+
+O `pack-module.ps1` gera o ZIP e copia para `app/src/main/assets/vcamgd-magisk.zip`.
 
 ## Uso responsavel
 

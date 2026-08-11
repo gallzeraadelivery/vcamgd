@@ -54,7 +54,8 @@ object NativeBridge {
         "com.transsion.camera",
     )
 
-    fun isModulePresent(): Boolean = fileExistsAsRoot(MODULE_PROP)
+    fun isModulePresent(): Boolean =
+        ModuleInstaller.isModulePresent() || fileExistsAsRoot(MODULE_PROP)
 
     fun readModuleStatus(): String {
         val raw = readFileAsRoot(STATUS_TMP) ?: readFileAsRoot(STATUS_ADB)

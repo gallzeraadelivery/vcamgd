@@ -95,7 +95,10 @@ class HomeFragment : Fragment() {
                     vm.toggleVirtualCamera(isChecked)
                 }
             }
-            binding.cameraStatus.text = state.camera.message
+            binding.cameraStatus.text = listOfNotNull(
+                state.camera.message,
+                state.moduleMessage,
+            ).joinToString("\n")
             binding.activationStatus.text =
                 if (prefs.activated) getString(com.vcamgd.app.R.string.activated)
                 else getString(com.vcamgd.app.R.string.not_activated)
