@@ -36,9 +36,17 @@ powershell -ExecutionPolicy Bypass -File scripts\pack-module.ps1
 
 ## Limites atuais
 
-- Fonte **arquivo local** suportada no feeder  
-- RTSP/RTMP e USB: controle ja existe; decode de rede ainda nao  
-- Nem todos os apps usam Camera2 da mesma forma; pode precisar ampliar hooks  
+- Fonte **arquivo local**: ok  
+- Fonte **rede**: RTSP / HTTP(S) via MediaPlayer; RTMP costuma falhar (use ffmpeg → RTSP)  
+- USB: controle existe; feeder dedicado ainda nao  
+
+Exemplo ffmpeg (PC → RTSP local):
+
+```bash
+ffmpeg -re -i video.mp4 -c copy -f rtsp rtsp://0.0.0.0:8554/live
+```
+
+No app: `rtsp://IP_DO_PC:8554/live`
 
 ## Uso responsavel
 

@@ -110,6 +110,8 @@ class HomeFragment : Fragment() {
             if (type == VideoSourceType.LOCAL_FILE) View.VISIBLE else View.GONE
         binding.networkUrlLayout.visibility =
             if (type == VideoSourceType.NETWORK_STREAM) View.VISIBLE else View.GONE
+        binding.networkTip.visibility =
+            if (type == VideoSourceType.NETWORK_STREAM) View.VISIBLE else View.GONE
         binding.usbHint.visibility =
             if (type == VideoSourceType.USB_TRANSFER) View.VISIBLE else View.GONE
     }

@@ -11,7 +11,8 @@
     <string name="source_usb">USB</string>
     <string name="no_video_selected">Nenhum video selecionado</string>
     <string name="select_video">Selecionar video</string>
-    <string name="network_url_hint">URL RTSP / RTMP</string>
+    <string name="network_url_hint">URL RTSP / HTTP (ex: rtsp://192.168.0.10:8554/live)</string>
+    <string name="network_tip">Preferivel RTSP ou HTTP. RTMP costuma falhar no MediaPlayer — republicar com ffmpeg como RTSP.</string>
     <string name="usb_hint">Transferencia USB de baixa latencia (requer host no PC).</string>
     <string name="enable_virtual_camera">Ativar camera virtual</string>
     <string name="status_virtual_camera_disabled">Camera virtual desativada</string>

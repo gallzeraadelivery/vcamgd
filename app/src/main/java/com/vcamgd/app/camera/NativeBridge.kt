@@ -47,9 +47,29 @@ object NativeBridge {
     }
 
     fun setNetworkSource(context: Context, url: String): Boolean {
-        persist(context, "network", url = url)
-        // Network decode ainda nao esta no feeder; grava URL para proxima iteracao.
-        return writeControl(enabled = true, virtual = true, source = "network", uri = "", url = url)
+        val normalized = url.trim()
+        if (!isValidNetworkUrl(normalized)) {
+            Log.e(TAG, "Invalid network url: $normalized")
+            return false
+        }
+        persist(context, "network", url = normalized)
+        return writeControl(
+            enabled = true,
+            virtual = true,
+            source = "network",
+            uri = "",
+            url = normalized,
+        )
+    }
+
+    private fun isValidNetworkUrl(url: String): Boolean {
+        val u = url.lowercase()
+        return u.startsWith("rtsp://") ||
+            u.startsWith("rtspt://") ||
+            u.startsWith("http://") ||
+            u.startsWith("https://") ||
+            u.startsWith("rtmp://") ||
+            u.startsWith("rtmps://")
     }
 
     fun setUsbSource(context: Context): Boolean {

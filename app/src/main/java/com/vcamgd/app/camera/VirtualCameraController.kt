@@ -68,10 +68,15 @@ class VirtualCameraController(private val context: Context) {
             }
             VideoSourceType.NETWORK_STREAM -> {
                 if (networkUrl.isBlank()) {
-                    fail("Informe a URL RTSP/RTMP")
+                    fail("Informe a URL RTSP/HTTP (RTMP pode falhar)")
                     return Result.failure(IllegalArgumentException("missing url"))
                 }
-                NativeBridge.setNetworkSource(context, networkUrl)
+                val ok = NativeBridge.setNetworkSource(context, networkUrl)
+                if (!ok) {
+                    fail("URL de rede invalida. Use rtsp:// ou http(s)://")
+                    return Result.failure(IllegalArgumentException("invalid url"))
+                }
+                true
             }
             VideoSourceType.USB_TRANSFER -> NativeBridge.setUsbSource(context)
         }

@@ -6,9 +6,11 @@ import android.util.Log
 import android.view.Surface
 import org.json.JSONObject
 import java.io.File
+import java.util.Locale
 
 /**
- * Lê o controle do Magisk module e alimenta Surfaces com vídeo (loop).
+ * Alimenta Surfaces com arquivo local ou stream de rede (RTSP/HTTP).
+ * RTMP: tenta MediaPlayer; na falha oriente a republicar como RTSP.
  */
 object VideoFeeder {
     private const val TAG = "VCamGD-Feeder"
@@ -27,6 +29,11 @@ object VideoFeeder {
         val uri: String,
         val url: String,
     )
+
+    sealed class PlaySource {
+        data class FilePath(val path: String) : PlaySource()
+        data class NetworkUrl(val url: String, val looping: Boolean) : PlaySource()
+    }
 
     fun readControl(): Control? {
         return try {
@@ -48,61 +55,107 @@ object VideoFeeder {
 
     fun shouldInject(): Boolean {
         val c = readControl() ?: return false
-        return c.enabled && c.virtual
+        if (!c.enabled || !c.virtual) return false
+        return resolvePlaySource(c) != null
     }
 
-    fun resolveVideoPath(): String? {
-        val c = readControl() ?: return null
-        val file = File(VIDEO_PATH)
-        if (file.exists() && file.length() > 0) return file.absolutePath
-        if (c.source == "local" && c.uri.startsWith("/")) {
-            val direct = File(c.uri)
-            if (direct.exists()) return direct.absolutePath
+    fun resolvePlaySource(control: Control? = readControl()): PlaySource? {
+        val c = control ?: return null
+        when (c.source.lowercase(Locale.US)) {
+            "network" -> {
+                val url = c.url.trim()
+                if (url.isEmpty()) return null
+                if (!isSupportedNetworkUrl(url)) {
+                    writeStatus("unsupported_url:$url")
+                    return null
+                }
+                return PlaySource.NetworkUrl(url, looping = isHttpProgressive(url))
+            }
+            "usb" -> {
+                val file = File(VIDEO_PATH)
+                return if (file.exists() && file.length() > 0) PlaySource.FilePath(file.absolutePath) else null
+            }
+            else -> {
+                val file = File(VIDEO_PATH)
+                if (file.exists() && file.length() > 0) {
+                    return PlaySource.FilePath(file.absolutePath)
+                }
+                if (c.uri.startsWith("/")) {
+                    val direct = File(c.uri)
+                    if (direct.exists()) return PlaySource.FilePath(direct.absolutePath)
+                }
+                return null
+            }
         }
-        return if (file.exists()) file.absolutePath else null
+    }
+
+    /** Compat: retorna path local se houver. */
+    fun resolveVideoPath(): String? {
+        return when (val src = resolvePlaySource()) {
+            is PlaySource.FilePath -> src.path
+            else -> null
+        }
     }
 
     @Synchronized
     fun startOnSurfaces(surfaces: List<Surface>) {
         if (surfaces.isEmpty()) return
-        val path = resolveVideoPath()
-        if (path == null) {
-            writeStatus("no_video_file")
-            Log.e(TAG, "No video at $VIDEO_PATH")
+        val source = resolvePlaySource()
+        if (source == null) {
+            writeStatus("no_playable_source")
+            Log.e(TAG, "No playable source in control.json")
             return
         }
         stop()
         try {
             val target = surfaces.first()
-            val mp = MediaPlayer().apply {
-                setDataSource(path)
-                isLooping = true
-                setSurface(target)
-                setOnPreparedListener {
-                    start()
+            val mp = MediaPlayer()
+            when (source) {
+                is PlaySource.FilePath -> {
+                    mp.setDataSource(source.path)
+                    mp.isLooping = true
+                    writeStatus("preparing_file:${source.path}")
+                }
+                is PlaySource.NetworkUrl -> {
+                    mp.setDataSource(source.url)
+                    mp.isLooping = source.looping
+                    writeStatus("preparing_network:${source.url}")
+                }
+            }
+            mp.setSurface(target)
+            mp.setOnPreparedListener {
+                try {
+                    it.start()
                     active = true
-                    writeStatus("feeding:$path")
-                    Log.i(TAG, "Feeding video $path")
+                    writeStatus("feeding:${describe(source)}")
+                    Log.i(TAG, "Feeding ${describe(source)}")
+                } catch (t: Throwable) {
+                    Log.e(TAG, "start failed", t)
+                    writeStatus("start_error:${t.message}")
                 }
-                setOnErrorListener { _, what, extra ->
-                    Log.e(TAG, "MediaPlayer error what=$what extra=$extra")
-                    writeStatus("player_error:$what:$extra")
-                    true
-                }
-                prepareAsync()
             }
+            mp.setOnErrorListener { _, what, extra ->
+                Log.e(TAG, "MediaPlayer error what=$what extra=$extra source=${describe(source)}")
+                val hint = if (source is PlaySource.NetworkUrl && source.url.startsWith("rtmp", true)) {
+                    "rtmp_unsupported_use_rtsp"
+                } else {
+                    "player_error:$what:$extra"
+                }
+                writeStatus(hint)
+                true
+            }
+            mp.setOnInfoListener { _, what, _ ->
+                Log.i(TAG, "MediaPlayer info=$what")
+                false
+            }
+            mp.prepareAsync()
             player = mp
-            // Extra surfaces: attach silent looping players if needed later
-            for (i in 1 until surfaces.size) {
-                // keep placeholders occupied by dummy texture surfaces elsewhere
-            }
         } catch (t: Throwable) {
             Log.e(TAG, "startOnSurfaces failed", t)
             writeStatus("feeder_error:${t.message}")
         }
     }
 
-    /** Surfaces descartáveis para a câmera real escrever sem afetar o preview. */
     fun createDummySurfaces(count: Int): List<Surface> {
         val out = ArrayList<Surface>(count)
         repeat(count) {
@@ -132,10 +185,31 @@ object VideoFeeder {
         dummyTextures.clear()
     }
 
+    private fun isSupportedNetworkUrl(url: String): Boolean {
+        val u = url.lowercase(Locale.US)
+        return u.startsWith("rtsp://") ||
+            u.startsWith("rtspt://") ||
+            u.startsWith("http://") ||
+            u.startsWith("https://") ||
+            u.startsWith("rtmp://") ||
+            u.startsWith("rtmps://")
+    }
+
+    private fun isHttpProgressive(url: String): Boolean {
+        val u = url.lowercase(Locale.US)
+        return u.startsWith("http://") || u.startsWith("https://")
+    }
+
+    private fun describe(source: PlaySource): String = when (source) {
+        is PlaySource.FilePath -> "file:${source.path}"
+        is PlaySource.NetworkUrl -> "net:${source.url}"
+    }
+
     private fun writeStatus(msg: String) {
         try {
+            val safe = msg.replace("\"", "'")
             File(STATUS).writeText(
-                """{"feeder":"$msg","ts":${System.currentTimeMillis()}}""",
+                """{"feeder":"$safe","ts":${System.currentTimeMillis()}}""",
             )
         } catch (_: Throwable) {
         }
