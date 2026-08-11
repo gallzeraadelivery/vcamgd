@@ -29,9 +29,12 @@ class MainActivity : AppCompatActivity() {
         val navHost = supportFragmentManager.findFragmentById(R.id.nav_host) as NavHostFragment
         binding.bottomNav.setupWithNavController(navHost.navController)
 
-        // Warm status check
         lifecycleScope.launch {
-            // no-op placeholder for future startup tasks
+            val prefs = VCamApp.instance.settings.preferences.first()
+            // Se virtual nao esta ligada no app, forca mode=real (recupera camera nativa)
+            com.vcamgd.app.camera.NativeBridge.syncPassthroughUnlessVirtualEnabled(
+                prefs.virtualCameraEnabled,
+            )
         }
     }
 }

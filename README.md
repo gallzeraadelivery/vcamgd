@@ -25,9 +25,9 @@ powershell -ExecutionPolicy Bypass -File scripts\pack-module.ps1
 ## Como funciona
 
 - Zygisk injeta `hook.dex` + `libpine.so` nos apps (inclui camera padrao do sistema)  
-- Hooks **Camera1** + **Camera2** com **injeção suave** (não quebra a camera real)  
-- Intercala **Real ↔ Virtual** via overlay (force-stop nos apps de camera)  
-- MediaPlayer alimenta o Surface de preview com arquivo/RTSP/HTTP  
+- Zygisk **so injeta** com `mode=virtual` (mode=real = camera nativa sem hooks)  
+- Modo virtual: hard inject (dummy na HAL + video no preview)  
+- Overlay **Real / Virtual** + force-stop nos apps de camera  
 
 
 ## Uso responsavel

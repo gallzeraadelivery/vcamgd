@@ -2,7 +2,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <sys/mman.h>
 #include <dlfcn.h>
 #include <ctime>
 
@@ -74,6 +73,31 @@ static bool json_bool(const std::string &json, const char *key, bool def) {
     return def;
 }
 
+static bool json_mode_is_real(const std::string &json) {
+    auto pos = json.find("\"mode\"");
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) return false;
+    auto r = json.find("real", pos);
+    auto v = json.find("virtual", pos);
+    if (r == std::string::npos) return false;
+    if (v != std::string::npos && v < r) return false;
+    // Ensure "real" appears soon after mode key
+    return r < pos + 24;
+}
+
+/** Virtual injection only when enabled and not mode=real. */
+static bool control_wants_virtual() {
+    std::string json;
+    if (!read_file(kControlPath, json)) {
+        if (!read_file(kLegacyControlPath, json)) return false;
+    }
+    if (!json_bool(json, "enabled", false)) return false;
+    if (json_mode_is_real(json)) return false;
+    if (!json_bool(json, "virtual", true)) return false;
+    return true;
+}
+
 static void write_status(const char *msg) {
     char buf[512];
     snprintf(buf, sizeof(buf),
@@ -96,8 +120,6 @@ public:
             env->ReleaseStringUTFChars(args->nice_name, process);
         }
 
-        // Skip only processes that cannot host camera UI / would crash with ART hooks.
-        // IMPORTANT: do NOT skip com.android.camera* / Google Camera / OEM camera apps.
         const bool isolated = process_name.find(':') != std::string::npos;
         const bool system_server = process_name == "system" || process_name == "system_server";
         const bool webview = process_name.find("webview") != std::string::npos;
@@ -105,7 +127,6 @@ public:
         if (isolated || system_server || webview || self) {
             api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
             should_inject = false;
-            LOGI("skip process=%s", process_name.c_str());
             return;
         }
 
@@ -125,7 +146,7 @@ public:
             close(fd);
         }
 
-        // Inject into all remaining apps (stock camera included). Enable checked at runtime.
+        // Companion sends 0 bytes when mode=real / disabled — pristine camera path
         should_inject = !dex_bytes.empty();
         if (!should_inject) {
             api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
@@ -172,7 +193,6 @@ private:
                 chmod(kPinePath, 0755);
             }
         }
-        // Prefer Java System.load so Pine's loadLibrary sees it registered when possible
         jclass sys = env->FindClass("java/lang/System");
         if (sys) {
             jmethodID load = env->GetStaticMethodID(sys, "load", "(Ljava/lang/String;)V");
@@ -209,7 +229,6 @@ private:
         jmethodID getSys = e->GetStaticMethodID(clCls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
         jobject parent = e->CallStaticObjectMethod(clCls, getSys);
 
-        // Prefer app classloader when available
         jclass at = e->FindClass("android/app/ActivityThread");
         if (at) {
             jmethodID curApp = e->GetStaticMethodID(at, "currentApplication", "()Landroid/app/Application;");
@@ -244,7 +263,6 @@ private:
             return false;
         }
 
-        // Prefer install(String processName) so status shows which app got hooks
         jmethodID installWithName = e->GetStaticMethodID(
                 static_cast<jclass>(hookClass), "install", "(Ljava/lang/String;)V");
         if (installWithName) {
@@ -268,11 +286,19 @@ static void companion_handler(int client) {
     mkdir("/data/local/tmp/vcamgd", 0777);
     mkdir("/data/adb/vcamgd", 0755);
 
-    // Ensure pine lib in tmp
     std::string pine;
     if (read_file(kModulePine, pine)) {
         write_file(kPinePath, pine.data(), pine.size());
         chmod(kPinePath, 0755);
+    }
+
+    // CRITICAL: no dex => no Pine hooks => stock camera opens normally
+    if (!control_wants_virtual()) {
+        LOGI("companion skip: virtual mode off");
+        write_status("passthrough_no_inject");
+        uint32_t zero = 0;
+        write(client, &zero, sizeof(zero));
+        return;
     }
 
     std::string dex;
@@ -285,6 +311,7 @@ static void companion_handler(int client) {
     uint32_t size = static_cast<uint32_t>(dex.size());
     write(client, &size, sizeof(size));
     write(client, dex.data(), size);
+    write_status("companion_sent_dex");
     LOGI("companion sent dex bytes=%u", size);
 }
 

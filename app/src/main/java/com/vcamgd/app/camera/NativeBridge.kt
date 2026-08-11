@@ -58,6 +58,23 @@ object NativeBridge {
         return if (raw.isNullOrBlank()) "Sem eventos do Zygisk ainda" else raw.trim()
     }
 
+    /**
+     * Garante pass-through (zero hooks) no arranque se a virtual nao estiver ativa no app.
+     * Recupera devices em que control.json ficou preso em mode=virtual.
+     */
+    fun syncPassthroughUnlessVirtualEnabled(virtualEnabledInApp: Boolean) {
+        if (virtualEnabledInApp) return
+        writeControl(
+            enabled = false,
+            virtual = false,
+            mode = "real",
+            source = "",
+            uri = "",
+            url = "",
+        )
+        restartCameraApps()
+    }
+
     fun setLocalVideoSource(context: Context, uri: Uri): Boolean {
         persist(context, "local", uri = uri.toString())
         val staged = stageLocalVideo(context, uri)
@@ -142,21 +159,40 @@ object NativeBridge {
         context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
             .edit()
             .putBoolean("virtual", false)
+            .putBoolean("enabled", false)
             .putString("mode", "real")
             .apply()
-        patchControlMode("real", virtual = false)
+        // enabled=false + mode=real => companion nao envia dex (camera nativa)
+        writeControl(
+            enabled = false,
+            virtual = false,
+            mode = "real",
+            source = "",
+            uri = "",
+            url = "",
+        )
         restartCameraApps()
     }
 
     fun switchToVirtual(context: Context) {
-        context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
-            .edit()
+        val prefs = context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
+        val source = prefs.getString("source", "local").orEmpty()
+        val uri = prefs.getString("uri", "").orEmpty()
+        val url = prefs.getString("url", "").orEmpty()
+        prefs.edit()
             .putBoolean("virtual", true)
             .putBoolean("enabled", true)
             .putString("mode", "virtual")
             .apply()
-        patchControlMode("virtual", virtual = true)
-        restartCameraApps()
+        val ok = writeControl(
+            enabled = true,
+            virtual = true,
+            mode = "virtual",
+            source = source.ifBlank { "local" },
+            uri = if (source == "local" || source.isBlank()) VIDEO_TMP else uri,
+            url = url,
+        )
+        if (ok) restartCameraApps()
     }
 
     /** Force-stop apps de camera para a nova sessao ler o modo atual. */
@@ -208,20 +244,6 @@ object NativeBridge {
             .putBoolean("virtual", true)
             .putString("mode", "virtual")
             .apply()
-    }
-
-    private fun patchControlMode(mode: String, virtual: Boolean) {
-        val current = readFileAsRoot(CONTROL_TMP) ?: readFileAsRoot(CONTROL_ADB)
-        val json = try {
-            if (current.isNullOrBlank()) JSONObject() else JSONObject(current)
-        } catch (_: Exception) {
-            JSONObject()
-        }
-        json.put("mode", mode)
-        json.put("virtual", virtual)
-        if (!json.has("enabled")) json.put("enabled", true)
-        if (mode == "virtual") json.put("enabled", true)
-        writeControlFiles(json.toString())
     }
 
     private fun writeControl(

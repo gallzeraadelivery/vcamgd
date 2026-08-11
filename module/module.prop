@@ -1,6 +1,6 @@
 id=vcamgd
 name=VCamGD Virtual Camera
-version=v0.5.2
-versionCode=7
+version=v0.5.3
+versionCode=8
 author=vcamgd
-description=KingVCam soft inject: Real/Virtual toggle without breaking stock camera. No LSPosed.
+description=Inject only in virtual mode; hard HAL dummies. Real mode = zero hooks.

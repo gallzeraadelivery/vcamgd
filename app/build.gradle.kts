@@ -11,8 +11,8 @@ android {
         applicationId = "com.vcamgd.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.5.2"
+        versionCode = 8
+        versionName = "0.5.3"
     }
 
     buildTypes {
