@@ -1,43 +1,33 @@
 # VCamGD
 
-App Android de **camera virtual** inspirado no OVCAM, com:
-
-1. App (`:app`) — UI + controle via root  
-2. Modulo Magisk Zygisk (`module/`) — IPC  
-3. Modulo LSPosed (`:xposed`) — hooks Camera2 + feeder de video  
+Camera virtual **so com Magisk/Zygisk** (Pine ART hooks). **LSPosed nao e necessario.**
 
 Repositorio: https://github.com/gallzeraadelivery/vcamgd  
-Release: https://github.com/gallzeraadelivery/vcamgd/releases
+Releases: https://github.com/gallzeraadelivery/vcamgd/releases
 
-## Instalacao (ordem)
+## Instalacao
 
-1. Magisk + **Zygisk ON** → instalar ZIP → reboot  
-2. **LSPosed** → instalar xposed APK → **ativar VCamGD Hook no app alvo** → reboot  
-3. Instalar app APK  
-4. VCamGD → conceder **root** → video → ativar  
-5. **Force-stop** no app alvo → abrir a camera de novo  
+1. Magisk + **Zygisk ON**  
+2. Instalar `vcamgd-magisk-zygisk.zip` → reboot  
+3. Instalar **apenas** `vcamgd-app-debug.apk`  
+4. Abrir VCamGD → root → video/URL → ativar  
+5. Force-stop no app alvo → abrir a camera  
 
-IPC: `/data/local/tmp/vcamgd/` (e espelho em `/data/adb/vcamgd/`)
+IPC: `/data/local/tmp/vcamgd/`
 
 ## Build
 
 ```bat
-gradlew.bat :app:assembleDebug :xposed:assembleDebug
+gradlew.bat :app:assembleDebug
 powershell -ExecutionPolicy Bypass -File scripts\pack-module.ps1
 ```
 
-## Troubleshooting
+## Como funciona
 
-- Status do app sem "Modulo" / root: conceda su ao VCamGD  
-- Hook nao ativa: confira escopo no LSPosed + force-stop do app alvo  
-- Camera1 / apps com preview proprio: pode nao usar Camera2 session  
-- Veja `/data/local/tmp/vcamgd/status.json` e logcat: `VCamGD`
-
-## Limites
-
-- Arquivo local e RTSP/HTTP  
-- RTMP: prefira republicar como RTSP  
+- Zygisk injeta `hook.dex` + `libpine.so` nos apps  
+- Hook em `CameraDevice.createCaptureSession`  
+- MediaPlayer alimenta o Surface com arquivo/RTSP/HTTP  
 
 ## Uso responsavel
 
-Apenas estudo/pesquisa. Nao use para fraude ou atividade ilegal.
+Apenas estudo/pesquisa.

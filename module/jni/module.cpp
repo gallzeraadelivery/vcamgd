@@ -2,49 +2,52 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <dlfcn.h>
 #include <ctime>
 
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "zygisk.hpp"
+#include <jni.h>
 
 #define LOG_TAG "VCamGD"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 static constexpr const char *kControlPath = "/data/local/tmp/vcamgd/control.json";
-static constexpr const char *kStatusPath = "/data/local/tmp/vcamgd/status.json";
 static constexpr const char *kLegacyControlPath = "/data/adb/vcamgd/control.json";
+static constexpr const char *kStatusPath = "/data/local/tmp/vcamgd/status.json";
+static constexpr const char *kPinePath = "/data/local/tmp/vcamgd/libpine.so";
+static constexpr const char *kModulePine = "/data/adb/modules/vcamgd/lib/arm64-v8a/libpine.so";
+static constexpr const char *kModuleDex = "/data/adb/modules/vcamgd/dex/hook.dex";
 
-struct ControlState {
-    bool enabled = false;
-    bool virtual_cam = true;
-    char source[16]{};
-    char uri[512]{};
-    char url[512]{};
-};
+using zygisk::Api;
+using zygisk::AppSpecializeArgs;
+using zygisk::ServerSpecializeArgs;
 
 static bool read_file(const char *path, std::string &out) {
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return false;
-    char buf[2048];
+    char buf[4096];
     ssize_t n;
     out.clear();
     while ((n = read(fd, buf, sizeof(buf))) > 0) {
         out.append(buf, static_cast<size_t>(n));
-        if (out.size() > 8192) break;
+        if (out.size() > 8 * 1024 * 1024) break;
     }
     close(fd);
-    return true;
+    return !out.empty() || n == 0;
 }
 
-static bool write_file(const char *path, const std::string &data) {
+static bool write_file(const char *path, const void *data, size_t len) {
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd < 0) return false;
-    const char *p = data.data();
-    size_t left = data.size();
+    const char *p = static_cast<const char *>(data);
+    size_t left = len;
     while (left > 0) {
         ssize_t n = write(fd, p, left);
         if (n <= 0) {
@@ -71,52 +74,13 @@ static bool json_bool(const std::string &json, const char *key, bool def) {
     return def;
 }
 
-static void json_string(const std::string &json, const char *key, char *out, size_t out_sz) {
-    out[0] = 0;
-    std::string needle = std::string("\"") + key + "\"";
-    auto pos = json.find(needle);
-    if (pos == std::string::npos) return;
-    pos = json.find(':', pos);
-    if (pos == std::string::npos) return;
-    pos = json.find('"', pos);
-    if (pos == std::string::npos) return;
-    auto end = json.find('"', pos + 1);
-    if (end == std::string::npos) return;
-    size_t len = end - (pos + 1);
-    if (len >= out_sz) len = out_sz - 1;
-    memcpy(out, json.c_str() + pos + 1, len);
-    out[len] = 0;
+static void write_status(const char *msg) {
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+             "{\"feeder\":\"%s\",\"ts\":%ld}\n", msg, static_cast<long>(time(nullptr)));
+    mkdir("/data/local/tmp/vcamgd", 0777);
+    write_file(kStatusPath, buf, strlen(buf));
 }
-
-static ControlState parse_control(const std::string &json) {
-    ControlState s;
-    s.enabled = json_bool(json, "enabled", false);
-    s.virtual_cam = json_bool(json, "virtual", true);
-    json_string(json, "source", s.source, sizeof(s.source));
-    json_string(json, "uri", s.uri, sizeof(s.uri));
-    json_string(json, "url", s.url, sizeof(s.url));
-    return s;
-}
-
-static void append_status_event(const char *process, const ControlState &state) {
-    char line[1024];
-    snprintf(
-        line,
-        sizeof(line),
-        "{\"process\":\"%s\",\"enabled\":%s,\"virtual\":%s,\"source\":\"%s\",\"ts\":%ld}\n",
-        process,
-        state.enabled ? "true" : "false",
-        state.virtual_cam ? "true" : "false",
-        state.source,
-        static_cast<long>(time(nullptr))
-    );
-    // overwrite small status file with latest event
-    write_file(kStatusPath, line);
-}
-
-using zygisk::Api;
-using zygisk::AppSpecializeArgs;
-using zygisk::ServerSpecializeArgs;
 
 class VCamModule : public zygisk::ModuleBase {
 public:
@@ -127,57 +91,57 @@ public:
 
     void preAppSpecialize(AppSpecializeArgs *args) override {
         const char *process = env->GetStringUTFChars(args->nice_name, nullptr);
-        if (!process) {
-            api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
-            return;
+        if (process) {
+            process_name = process;
+            env->ReleaseStringUTFChars(args->nice_name, process);
         }
-        process_name = process;
-        env->ReleaseStringUTFChars(args->nice_name, process);
+
+        // Skip isolated / heavy system processes
+        if (process_name.find(":") != std::string::npos ||
+            process_name == "system" ||
+            process_name.rfind("com.android.", 0) == 0) {
+            // still allow camera apps under com.android - actually skip most system
+        }
 
         int fd = api->connectCompanion();
         if (fd >= 0) {
-            uint8_t flag = 0;
-            if (read(fd, &flag, 1) == 1) {
-                control_enabled = flag == 1;
-            }
-            // optional: read rest of control blob size + payload
             uint32_t size = 0;
-            if (read(fd, &size, sizeof(size)) == sizeof(size) && size > 0 && size < 8192) {
-                std::string json(size, '\0');
+            if (read(fd, &size, sizeof(size)) == sizeof(size) && size > 0 && size < 16 * 1024 * 1024) {
+                dex_bytes.resize(size);
                 size_t got = 0;
                 while (got < size) {
-                    ssize_t n = read(fd, json.data() + got, size - got);
+                    ssize_t n = read(fd, dex_bytes.data() + got, size - got);
                     if (n <= 0) break;
                     got += static_cast<size_t>(n);
                 }
-                if (got == size) {
-                    control = parse_control(json);
-                    control_enabled = control.enabled;
-                }
+                if (got != size) dex_bytes.clear();
             }
             close(fd);
         }
 
-        // Keep loaded when virtual camera is enabled, or in our own app for diagnostics.
-        bool keep = control_enabled || process_name == "com.vcamgd.app";
-        if (!keep) {
+        // Always keep module for camera injection path (hooks check enable at runtime)
+        should_inject = !dex_bytes.empty();
+        if (!should_inject) {
             api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
         }
-        LOGI("preAppSpecialize process=%s enabled=%d", process_name.c_str(), control_enabled ? 1 : 0);
+        LOGI("preAppSpecialize process=%s dex=%zu", process_name.c_str(), dex_bytes.size());
     }
 
     void postAppSpecialize(const AppSpecializeArgs *args) override {
         (void) args;
-        if (!control_enabled && process_name != "com.vcamgd.app") {
+        if (!should_inject || dex_bytes.empty()) return;
+        if (!ensure_pine_loaded()) {
+            write_status("pine_load_failed");
+            LOGE("pine load failed");
             return;
         }
-        append_status_event(process_name.c_str(), control);
-        // Hook point for future Camera2/Camera NDK interception.
-        // Full frame injection (video/RTSP) will plug in here via PLT/JNI hooks.
-        LOGI("postAppSpecialize active in %s source=%s virtual=%d",
-             process_name.c_str(),
-             control.source,
-             control.virtual_cam ? 1 : 0);
+        if (!inject_dex_and_install()) {
+            write_status("dex_inject_failed");
+            LOGE("dex inject failed");
+            return;
+        }
+        write_status("zygisk_hooks_installed");
+        LOGI("hooks installed in %s", process_name.c_str());
     }
 
     void preServerSpecialize(ServerSpecializeArgs *args) override {
@@ -189,26 +153,124 @@ private:
     Api *api = nullptr;
     JNIEnv *env = nullptr;
     std::string process_name;
-    bool control_enabled = false;
-    ControlState control{};
+    std::vector<uint8_t> dex_bytes;
+    bool should_inject = false;
+
+    bool ensure_pine_loaded() {
+        if (access(kPinePath, R_OK) != 0) {
+            std::string pine;
+            if (read_file(kModulePine, pine)) {
+                mkdir("/data/local/tmp/vcamgd", 0777);
+                write_file(kPinePath, pine.data(), pine.size());
+                chmod(kPinePath, 0755);
+            }
+        }
+        // Prefer Java System.load so Pine's loadLibrary sees it registered when possible
+        jclass sys = env->FindClass("java/lang/System");
+        if (sys) {
+            jmethodID load = env->GetStaticMethodID(sys, "load", "(Ljava/lang/String;)V");
+            if (load) {
+                jstring path = env->NewStringUTF(kPinePath);
+                env->CallStaticVoidMethod(sys, load, path);
+                if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
+                } else {
+                    return true;
+                }
+            }
+        }
+        void *h = dlopen(kPinePath, RTLD_NOW);
+        if (!h) h = dlopen(kModulePine, RTLD_NOW);
+        if (!h) {
+            LOGE("dlopen pine: %s", dlerror());
+            return false;
+        }
+        return true;
+    }
+
+    bool inject_dex_and_install() {
+        JNIEnv *e = env;
+        jclass bbufCls = e->FindClass("java/nio/ByteBuffer");
+        if (!bbufCls) return false;
+        jmethodID wrap = e->GetStaticMethodID(bbufCls, "wrap", "([B)Ljava/nio/ByteBuffer;");
+        jbyteArray arr = e->NewByteArray(static_cast<jsize>(dex_bytes.size()));
+        e->SetByteArrayRegion(arr, 0, static_cast<jsize>(dex_bytes.size()),
+                              reinterpret_cast<const jbyte *>(dex_bytes.data()));
+        jobject buffer = e->CallStaticObjectMethod(bbufCls, wrap, arr);
+
+        jclass clCls = e->FindClass("java/lang/ClassLoader");
+        jmethodID getSys = e->GetStaticMethodID(clCls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
+        jobject parent = e->CallStaticObjectMethod(clCls, getSys);
+
+        // Prefer app classloader when available
+        jclass at = e->FindClass("android/app/ActivityThread");
+        if (at) {
+            jmethodID curApp = e->GetStaticMethodID(at, "currentApplication", "()Landroid/app/Application;");
+            if (curApp) {
+                jobject app = e->CallStaticObjectMethod(at, curApp);
+                if (app) {
+                    jclass ctx = e->FindClass("android/content/ContextWrapper");
+                    jmethodID getCl = e->GetMethodID(ctx, "getClassLoader", "()Ljava/lang/ClassLoader;");
+                    if (getCl) {
+                        jobject appCl = e->CallObjectMethod(app, getCl);
+                        if (appCl) parent = appCl;
+                    }
+                }
+            }
+        }
+
+        jclass imdcl = e->FindClass("dalvik/system/InMemoryDexClassLoader");
+        if (!imdcl) return false;
+        jmethodID ctor = e->GetMethodID(imdcl, "<init>", "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
+        jobject loader = e->NewObject(imdcl, ctor, buffer, parent);
+        if (!loader || e->ExceptionCheck()) {
+            e->ExceptionClear();
+            return false;
+        }
+
+        jmethodID loadClass = e->GetMethodID(clCls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+        jstring name = e->NewStringUTF("com.vcamgd.hook.HookEntry");
+        jobject hookClass = e->CallObjectMethod(loader, loadClass, name);
+        if (!hookClass || e->ExceptionCheck()) {
+            e->ExceptionDescribe();
+            e->ExceptionClear();
+            return false;
+        }
+
+        jmethodID install = e->GetStaticMethodID(static_cast<jclass>(hookClass), "install", "()V");
+        if (!install) return false;
+        e->CallStaticVoidMethod(static_cast<jclass>(hookClass), install);
+        if (e->ExceptionCheck()) {
+            e->ExceptionDescribe();
+            e->ExceptionClear();
+            return false;
+        }
+        return true;
+    }
 };
 
 static void companion_handler(int client) {
     mkdir("/data/local/tmp/vcamgd", 0777);
     mkdir("/data/adb/vcamgd", 0755);
-    std::string json;
-    if (!read_file(kControlPath, json) && !read_file(kLegacyControlPath, json)) {
-        json = "{\"enabled\":false,\"virtual\":true,\"source\":\"\",\"uri\":\"\",\"url\":\"\"}";
+
+    // Ensure pine lib in tmp
+    std::string pine;
+    if (read_file(kModulePine, pine)) {
+        write_file(kPinePath, pine.data(), pine.size());
+        chmod(kPinePath, 0755);
     }
 
-    uint8_t flag = json_bool(json, "enabled", false) ? 1 : 0;
-    write(client, &flag, 1);
-    uint32_t size = static_cast<uint32_t>(json.size());
-    write(client, &size, sizeof(size));
-    if (size > 0) {
-        write(client, json.data(), size);
+    std::string dex;
+    if (!read_file(kModuleDex, dex)) {
+        LOGE("companion missing hook.dex");
+        uint32_t zero = 0;
+        write(client, &zero, sizeof(zero));
+        return;
     }
-    LOGI("companion served control enabled=%u bytes=%u", flag, size);
+    uint32_t size = static_cast<uint32_t>(dex.size());
+    write(client, &size, sizeof(size));
+    write(client, dex.data(), size);
+    LOGI("companion sent dex bytes=%u", size);
 }
 
 REGISTER_ZYGISK_MODULE(VCamModule)

@@ -1,6 +1,6 @@
 id=vcamgd
 name=VCamGD Virtual Camera
-version=v0.3.1
-versionCode=4
+version=v0.4.0
+versionCode=5
 author=vcamgd
-description=Zygisk IPC for VCamGD (tmp + adb). Pair with LSPosed module com.vcamgd.xposed.
+description=Zygisk virtual camera with Pine ART hooks. No LSPosed required.

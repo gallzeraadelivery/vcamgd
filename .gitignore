@@ -3,6 +3,7 @@
 *.aab
 *.dex
 *.so
+!module/dex/hook.dex
 !module/zygisk/*.so
 !module/**/*.so
 
@@ -14,8 +15,10 @@
 hs_err_pid*.log
 vcama16.apk
 
-# Ferramentas locais
+# Ferramentas / deps baixadas
 /tools/
+/module/third_party/
+/hook-src/build/
 
 # NDK intermediarios
 /module/libs/

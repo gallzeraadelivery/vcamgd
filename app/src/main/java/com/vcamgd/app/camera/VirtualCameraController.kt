@@ -52,11 +52,6 @@ class VirtualCameraController(private val context: Context) {
         )
         delay(200)
 
-        if (!NativeBridge.isModulePresent()) {
-            // Ainda tenta: LSPosed pode funcionar sozinho com /data/local/tmp
-            // mas avisa no status.
-        }
-
         val configured = when (sourceType) {
             VideoSourceType.LOCAL_FILE -> {
                 if (localUri == null) {
@@ -83,14 +78,14 @@ class VirtualCameraController(private val context: Context) {
         return if (configured) {
             _status.value = VirtualCameraStatus(
                 state = VirtualCameraState.ENABLED,
-                message = "Ativa. Force-stop no app alvo e abra de novo a camera.",
+                message = "Ativa (Magisk/Zygisk). Force-stop no app alvo e abra a camera.",
                 usingRealCamera = false,
-                moduleInstalled = true,
+                moduleInstalled = NativeBridge.isModulePresent(),
                 zygiskEvent = NativeBridge.readModuleStatus(),
             )
             Result.success(Unit)
         } else {
-            fail("Falha ao gravar controle (precisa conceder root ao VCamGD)")
+            fail("Falha ao gravar controle (conceda root ao VCamGD)")
             Result.failure(IllegalStateException("native configure failed"))
         }
     }

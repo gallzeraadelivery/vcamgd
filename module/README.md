@@ -1,18 +1,27 @@
 # VCamGD Magisk/Zygisk module
-#
-# Build + pack:
-#   powershell -ExecutionPolicy Bypass -File scripts\pack-module.ps1
-#
-# Install:
-#   1. Magisk app -> Modules -> Install from storage -> dist\vcamgd-magisk-zygisk.zip
-#   2. Enable Zygisk in Magisk settings
-#   3. Reboot
-#
-# IPC:
-#   /data/adb/vcamgd/control.json  (app writes via su)
-#   /data/adb/vcamgd/status.json   (zygisk writes last event)
-#
-# Current stage:
-#   - Module loads into app processes when control.enabled=true
-#   - Companion serves control state
-#   - Camera frame injection hooks are NEXT (Camera2/NDK PLT)
+
+Camera virtual via **Zygisk + Pine**. LSPosed nao e necessario.
+
+## Build + pack
+
+```bat
+powershell -ExecutionPolicy Bypass -File scripts\pack-module.ps1
+```
+
+## Install
+
+1. Magisk → Zygisk ON  
+2. Modules → Install from storage → `dist\vcamgd-magisk-zygisk.zip`  
+3. Reboot  
+4. Instalar so o app VCamGD  
+
+## IPC
+
+- Primario: `/data/local/tmp/vcamgd/` (`control.json`, `current.mp4`, `status.json`)  
+- Espelho: `/data/adb/vcamgd/`  
+
+## Conteudo
+
+- `zygisk/arm64-v8a.so` — injeta `hook.dex` + carrega `libpine.so`  
+- `dex/hook.dex` — hooks Camera2 + feeder MediaPlayer  
+- `lib/arm64-v8a/libpine.so` — ART hooks in-process  

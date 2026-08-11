@@ -9,7 +9,7 @@ import java.io.File
 import java.io.InputStreamReader
 
 /**
- * IPC primario: /data/local/tmp/vcamgd (legivel pelos apps / LSPosed)
+ * IPC primario: /data/local/tmp/vcamgd (legivel pelos apps / hooks Zygisk)
  * Espelho:     /data/adb/vcamgd (Magisk/Zygisk)
  */
 object NativeBridge {
@@ -29,7 +29,7 @@ object NativeBridge {
 
     fun readModuleStatus(): String {
         val raw = readFileAsRoot(STATUS_TMP) ?: readFileAsRoot(STATUS_ADB)
-        return if (raw.isNullOrBlank()) "Sem eventos do Zygisk/LSPosed ainda" else raw.trim()
+        return if (raw.isNullOrBlank()) "Sem eventos do Zygisk ainda" else raw.trim()
     }
 
     fun setLocalVideoSource(context: Context, uri: Uri): Boolean {
