@@ -12,6 +12,7 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import com.vcamgd.app.VCamApp
 import com.vcamgd.app.camera.KingEngine
+import com.vcamgd.app.camera.ModuleInstaller
 import com.vcamgd.app.camera.VirtualCameraController
 import com.vcamgd.app.camera.VirtualCameraStatus
 import com.vcamgd.app.data.AppPreferences
@@ -83,26 +84,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             when (result) {
                 is KingEngine.Result.Ok -> {
+                    val pendingReboot = withContext(Dispatchers.IO) {
+                        ModuleInstaller.ensureInstalled(getApplication()) is
+                            ModuleInstaller.Result.InstalledNeedsReboot
+                    }
+                    // So avisa reboot UMA vez se ainda estiver em modules_update
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
-                            needsReboot = false,
-                            moduleMessage = "KingEngine pronto (kingvd + Zygisk soft)",
+                            needsReboot = pendingReboot,
+                            moduleMessage = if (pendingReboot) {
+                                "KingEngine ok — reinicie 1x para hooks Zygisk"
+                            } else {
+                                "KingEngine pronto (kingvd + Zygisk soft)"
+                            },
                         ),
                     )
                     runCatching { controller.refreshModuleStatus() }
                 }
                 is KingEngine.Result.Failed -> {
-                    val reboot = result.reason.startsWith("REBOOT_REQUIRED:")
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
-                            needsReboot = reboot,
-                            moduleMessage = if (reboot) {
-                                "Modulo Zygisk instalado — reinicie o telefone"
-                            } else {
-                                "Motor: ${result.reason}"
-                            },
+                            needsReboot = false,
+                            moduleMessage = "Motor: ${result.reason}",
                         ),
                     )
                 }
@@ -144,12 +149,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     KingEngine.ensureRunning(getApplication())
                 }
                 if (boot is KingEngine.Result.Failed) {
-                    val reboot = boot.reason.startsWith("REBOOT_REQUIRED:")
-                    _uiState.postValue(_uiState.value?.copy(busy = false, needsReboot = reboot))
-                    toast(
-                        if (reboot) "Reinicie o telefone antes de ativar"
-                        else "Motor: ${boot.reason}",
-                    )
+                    _uiState.postValue(_uiState.value?.copy(busy = false, needsReboot = false))
+                    toast("Motor: ${boot.reason}")
                     return@launch
                 }
             }

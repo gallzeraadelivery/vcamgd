@@ -8,12 +8,18 @@ import java.util.zip.ZipInputStream
 /**
  * Instala o modulo Zygisk embutido no APK (modelo OVCAM: usuario so instala o APK).
  * Requer Magisk/KernelSU com Zygisk + root (su).
+ *
+ * Importante: nao chamar `magisk --install-module` de novo se o modulo ja esta
+ * ativo — Magisk coloca em modules_update e exige reboot infinito.
  */
 object ModuleInstaller {
     private const val TAG = "VCamGD-ModuleInstall"
     private const val ASSET_ZIP = "vcamgd-magisk.zip"
     private const val MODULE_DIR = "/data/adb/modules/vcamgd"
+    private const val MODULE_UPDATE_DIR = "/data/adb/modules_update/vcamgd"
     private const val MODULE_PROP = "$MODULE_DIR/module.prop"
+    private const val MODULE_UPDATE_PROP = "$MODULE_UPDATE_DIR/module.prop"
+    private const val ZYGISK_SO = "$MODULE_DIR/zygisk/arm64-v8a.so"
     private const val EMBEDDED_VERSION_CODE = 14
 
     sealed class Result {
@@ -24,11 +30,7 @@ object ModuleInstaller {
 
     fun isModulePresent(): Boolean = fileExistsAsRoot(MODULE_PROP)
 
-    fun installedVersionCode(): Int {
-        val raw = readFileAsRoot(MODULE_PROP) ?: return -1
-        val line = raw.lineSequence().firstOrNull { it.startsWith("versionCode=") } ?: return -1
-        return line.substringAfter("=").trim().toIntOrNull() ?: -1
-    }
+    fun installedVersionCode(): Int = readVersionCode(MODULE_PROP)
 
     /**
      * Garante modulo instalado/atualizado a partir do asset do APK.
@@ -41,12 +43,26 @@ object ModuleInstaller {
             return Result.Failed("Magisk/KernelSU nao detectado (/data/adb/modules)")
         }
 
-        val current = installedVersionCode()
-        if (current >= EMBEDDED_VERSION_CODE && isModulePresent() && !isModuleDisabled()) {
-            Log.i(TAG, "module ok versionCode=$current")
+        val liveVersion = readVersionCode(MODULE_PROP)
+        val pendingVersion = readVersionCode(MODULE_UPDATE_PROP)
+        val liveOk = liveVersion >= EMBEDDED_VERSION_CODE &&
+            fileExistsAsRoot(ZYGISK_SO) &&
+            !isModuleDisabled()
+
+        // Ja ativo apos reboot — NUNCA reinstalar (evita loop de reboot).
+        if (liveOk) {
+            Log.i(TAG, "module already active versionCode=$liveVersion")
+            ensureIpcDirs()
             return Result.AlreadyInstalled
         }
 
+        // Magisk ja stageou update; so falta o reboot que o usuario ainda nao fez.
+        if (pendingVersion >= EMBEDDED_VERSION_CODE) {
+            Log.i(TAG, "module pending in modules_update versionCode=$pendingVersion")
+            return Result.InstalledNeedsReboot
+        }
+
+        // Modulo antigo/incompleto: atualizar arquivos.
         return try {
             val staged = stageZipFromAssets(context) ?: return Result.Failed("Asset $ASSET_ZIP ausente no APK")
             val extracted = File(context.cacheDir, "vcamgd_module_extract")
@@ -54,28 +70,68 @@ object ModuleInstaller {
             extracted.mkdirs()
             unzip(staged, extracted)
 
-            val ok = deployExtracted(extracted)
+            val hadLiveBefore = fileExistsAsRoot(MODULE_PROP)
+            val ok = deployExtracted(extracted, preferInPlace = hadLiveBefore)
             if (!ok) return Result.Failed("Falha ao copiar modulo para $MODULE_DIR")
 
-            // Prep IPC paths + pine (equivalente ao customize/service)
-            shellSu(
-                "mkdir -p /data/local/tmp/vcamgd /data/adb/vcamgd; " +
-                    "chmod 777 /data/local/tmp/vcamgd; " +
-                    "if [ -f $MODULE_DIR/lib/arm64-v8a/libpine.so ]; then " +
-                    "cp -f $MODULE_DIR/lib/arm64-v8a/libpine.so /data/local/tmp/vcamgd/libpine.so; " +
-                    "chmod 755 /data/local/tmp/vcamgd/libpine.so; fi; " +
-                    "echo '{\"enabled\":false,\"virtual\":false,\"mode\":\"real\",\"source\":\"\",\"uri\":\"\",\"url\":\"\"}' > /data/local/tmp/vcamgd/control.json; " +
-                    "cp -f /data/local/tmp/vcamgd/control.json /data/adb/vcamgd/control.json; " +
-                    "chmod 666 /data/local/tmp/vcamgd/control.json /data/adb/vcamgd/control.json; " +
-                    "echo OK",
+            ensureIpcDirs()
+
+            val liveAfter = readVersionCode(MODULE_PROP)
+            val pendingAfter = readVersionCode(MODULE_UPDATE_PROP)
+            Log.i(
+                TAG,
+                "module deploy done live=$liveAfter pending=$pendingAfter hadLive=$hadLiveBefore",
             )
 
-            Log.i(TAG, "module installed/updated to $EMBEDDED_VERSION_CODE")
-            Result.InstalledNeedsReboot
+            // Se ficou so em modules_update, precisa reboot.
+            if (pendingAfter >= EMBEDDED_VERSION_CODE && liveAfter < EMBEDDED_VERSION_CODE) {
+                return Result.InstalledNeedsReboot
+            }
+
+            // Copia in-place para modules/ com versao ok: Zygisk so carrega no boot,
+            // mas se ja existia o modulo, um reboot ja foi pedido antes — nao bloquear
+            // o app para sempre. Pedimos reboot so na primeira instalacao.
+            if (liveAfter >= EMBEDDED_VERSION_CODE && fileExistsAsRoot(ZYGISK_SO)) {
+                return if (hadLiveBefore) {
+                    Result.AlreadyInstalled
+                } else {
+                    Result.InstalledNeedsReboot
+                }
+            }
+
+            if (pendingAfter >= EMBEDDED_VERSION_CODE || liveAfter >= 0) {
+                return Result.InstalledNeedsReboot
+            }
+            Result.Failed("Modulo nao ficou instalado (verifique Magisk/Zygisk)")
         } catch (t: Throwable) {
             Log.e(TAG, "ensureInstalled", t)
             Result.Failed(t.message ?: "erro desconhecido")
         }
+    }
+
+    private fun ensureIpcDirs() {
+        shellSu(
+            "mkdir -p /data/local/tmp/vcamgd /data/adb/vcamgd; " +
+                "chmod 777 /data/local/tmp/vcamgd; " +
+                "if [ -f $MODULE_DIR/lib/arm64-v8a/libpine.so ]; then " +
+                "cp -f $MODULE_DIR/lib/arm64-v8a/libpine.so /data/local/tmp/vcamgd/libpine.so; " +
+                "chmod 755 /data/local/tmp/vcamgd/libpine.so; fi; " +
+                "if [ ! -f /data/local/tmp/vcamgd/control.json ]; then " +
+                "echo '{\"enabled\":false,\"virtual\":false,\"mode\":\"real\",\"source\":\"\",\"uri\":\"\",\"url\":\"\"}' " +
+                "> /data/local/tmp/vcamgd/control.json; fi; " +
+                "cp -f /data/local/tmp/vcamgd/control.json /data/adb/vcamgd/control.json 2>/dev/null; " +
+                "chmod 666 /data/local/tmp/vcamgd/control.json /data/adb/vcamgd/control.json 2>/dev/null; " +
+                "echo OK",
+        )
+    }
+
+    private fun readVersionCode(propPath: String): Int {
+        val raw = readFileAsRoot(propPath) ?: return -1
+        val line = raw.lineSequence()
+            .map { it.trim().trimEnd('\r') }
+            .firstOrNull { it.startsWith("versionCode=") }
+            ?: return -1
+        return line.substringAfter("=").trim().toIntOrNull() ?: -1
     }
 
     private fun isModuleDisabled(): Boolean =
@@ -85,7 +141,7 @@ object ModuleInstaller {
         shellSu("test -d /data/adb/modules && echo OK").contains("OK")
 
     private fun hasSu(): Boolean =
-        shellSu("id").contains("uid=0") || shellSu("echo OK").contains("OK")
+        shellSu("id").contains("uid=0")
 
     private fun stageZipFromAssets(context: Context): File? {
         return try {
@@ -116,24 +172,34 @@ object ModuleInstaller {
         }
     }
 
-    private fun deployExtracted(extracted: File): Boolean {
+    /**
+     * @param preferInPlace se true, copia direto em modules/ (sem magisk CLI),
+     * evitando stages em modules_update que pedem reboot de novo.
+     */
+    private fun deployExtracted(extracted: File, preferInPlace: Boolean): Boolean {
         val src = extracted.absolutePath
-        // Prefer magisk CLI when available
         val zipInCache = File(extracted.parentFile, ASSET_ZIP)
-        if (zipInCache.exists()) {
+
+        if (!preferInPlace && zipInCache.exists()) {
             val viaMagisk = shellSu(
                 "magisk --install-module '${zipInCache.absolutePath}' 2>&1; echo EXIT:\$?",
             )
             Log.i(TAG, "magisk --install-module: $viaMagisk")
-            if (viaMagisk.contains("EXIT:0") || fileExistsAsRoot(MODULE_PROP)) {
-                shellSu("rm -f $MODULE_DIR/disable $MODULE_DIR/remove; echo OK")
-                return fileExistsAsRoot(MODULE_PROP)
+            // Magisk costuma deixar em modules_update ate o reboot
+            if (viaMagisk.contains("EXIT:0") ||
+                fileExistsAsRoot(MODULE_PROP) ||
+                fileExistsAsRoot(MODULE_UPDATE_PROP)
+            ) {
+                shellSu(
+                    "rm -f $MODULE_DIR/disable $MODULE_DIR/remove " +
+                        "$MODULE_UPDATE_DIR/disable $MODULE_UPDATE_DIR/remove 2>/dev/null; echo OK",
+                )
+                return fileExistsAsRoot(MODULE_PROP) || fileExistsAsRoot(MODULE_UPDATE_PROP)
             }
         }
 
         val script =
-            "rm -rf '$MODULE_DIR'; " +
-                "mkdir -p '$MODULE_DIR/zygisk' '$MODULE_DIR/dex' '$MODULE_DIR/lib/arm64-v8a'; " +
+            "mkdir -p '$MODULE_DIR/zygisk' '$MODULE_DIR/dex' '$MODULE_DIR/lib/arm64-v8a'; " +
                 "cp -f '$src/module.prop' '$MODULE_DIR/module.prop'; " +
                 "cp -f '$src/customize.sh' '$MODULE_DIR/customize.sh' 2>/dev/null; " +
                 "cp -f '$src/service.sh' '$MODULE_DIR/service.sh' 2>/dev/null; " +

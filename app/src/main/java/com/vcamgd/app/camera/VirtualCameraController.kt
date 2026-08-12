@@ -61,10 +61,6 @@ class VirtualCameraController(private val context: Context) {
 
         val boot = withContext(Dispatchers.IO) { KingEngine.ensureRunning(context) }
         if (boot is KingEngine.Result.Failed) {
-            if (boot.reason.startsWith("REBOOT_REQUIRED:")) {
-                fail("Reinicie o telefone uma vez (modulo Zygisk instalado)")
-                return Result.failure(IllegalStateException(boot.reason))
-            }
             fail(boot.reason)
             return Result.failure(IllegalStateException(boot.reason))
         }

@@ -38,9 +38,12 @@ object KingEngine {
             when (val mod = ModuleInstaller.ensureInstalled(context)) {
                 is ModuleInstaller.Result.Failed ->
                     return Result.Failed("Zygisk/Magisk: ${mod.reason}")
-                is ModuleInstaller.Result.InstalledNeedsReboot ->
-                    return Result.Failed("REBOOT_REQUIRED:reinicie o telefone")
                 is ModuleInstaller.Result.AlreadyInstalled -> Unit
+                is ModuleInstaller.Result.InstalledNeedsReboot -> {
+                    // Modulo stageado: sobe kingvd mesmo assim. Hooks Zygisk
+                    // so entram apos reboot, mas nao bloqueamos o app em loop.
+                    Log.w(TAG, "modulo Zygisk aguardando reboot — seguindo com kingvd")
+                }
             }
 
             extractAndDeploy(context)
