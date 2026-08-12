@@ -116,10 +116,13 @@ class VirtualCameraController(private val context: Context) {
             return Result.failure(IllegalStateException(play.reason))
         }
 
+        // So force-stop apps — NAO matar cameraserver (HyperOS/Android 16)
+        delay(250)
         withContext(Dispatchers.IO) { NativeBridge.restartCameraApps() }
+        delay(200)
         _status.value = VirtualCameraStatus(
             state = VirtualCameraState.ENABLED,
-            message = "Virtual ON. Abra a camera (Android ${android.os.Build.VERSION.RELEASE}).",
+            message = "Virtual ON. Feche e abra a camera do telefone.",
             usingRealCamera = false,
             moduleInstalled = true,
             zygiskEvent = UniversalEngine.statusLine(context),
@@ -179,7 +182,11 @@ class VirtualCameraController(private val context: Context) {
                 "mkdir -p /data/local/tmp/vcamgd /data/adb/vcamgd; " +
                     "cp '${cache.absolutePath}' '$dest'; " +
                     "cp '$dest' /data/adb/vcamgd/current.mp4 2>/dev/null; " +
-                    "chmod 777 /data/local/tmp/vcamgd; chmod 666 '$dest'; " +
+                    // Xiaomi/HyperOS: copia tambem em /data e /sdcard legivel
+                    "cp '$dest' /data/local/tmp/current.mp4 2>/dev/null; " +
+                    "cp '$dest' /sdcard/vcam_input.mp4 2>/dev/null; " +
+                    "chmod 777 /data/local/tmp/vcamgd /data/local/tmp; " +
+                    "chmod 666 '$dest' /data/local/tmp/current.mp4 /sdcard/vcam_input.mp4 2>/dev/null; " +
                     "chcon u:object_r:magisk_file:s0 '$dest' 2>/dev/null; " +
                     "chcon u:object_r:system_data_file:s0 '$dest' 2>/dev/null; " +
                     "ls -lZ '$dest'; echo OK",

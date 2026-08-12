@@ -42,7 +42,7 @@ object NativeBridge {
         "com.huawei.camera",
         "com.oplus.camera",
         "com.oneplus.camera",
-        // Motorola (G60 / family)
+        // Motorola
         "com.motorola.camera",
         "com.motorola.camera2",
         "com.motorola.camera3",
@@ -50,7 +50,14 @@ object NativeBridge {
         "com.motorola.actions",
         "com.sonyericsson.android.camera",
         "com.transsion.camera",
-        // Apps que usam camera com frequencia
+        // Xiaomi / HyperOS / Redmi Note
+        "com.xiaomi.scanner",
+        "com.mlab.cam",
+        "com.xiaomi.mircs",
+        "com.miui.gallery",
+        "com.xiaomi.camera.videocast",
+        "com.xiaomi.cameratools",
+        // Apps frequentes
         "com.whatsapp",
         "com.whatsapp.w4b",
         "com.instagram.android",
@@ -61,7 +68,8 @@ object NativeBridge {
         "com.snapchat.android",
         "com.google.android.apps.messaging",
         "com.android.chrome",
-        "com.android.systemui",
+        "com.ss.android.ugc.aweme",
+        "com.zhiliaoapp.musically",
     )
 
     fun isModulePresent(): Boolean =
@@ -219,7 +227,8 @@ object NativeBridge {
     }
 
     /**
-     * Force-stop apps de camera + reinicia HAL (recupera Motorola 03400001).
+     * Force-stop apps de camera. No HyperOS/Android 16 NAO mata cameraserver aqui —
+     * isso derruba o inject do vcplax (camera volta real).
      */
     fun restartCameraApps() {
         val cmds = CAMERA_PACKAGES.joinToString("; ") { "am force-stop $it 2>/dev/null" }
@@ -227,11 +236,6 @@ object NativeBridge {
             "$cmds; " +
                 "for p in \$(dumpsys media.camera 2>/dev/null | grep -oE 'com\\.[a-zA-Z0-9_.]+' | sort -u); do " +
                 "am force-stop \"\$p\" 2>/dev/null; done; " +
-                "killall cameraserver 2>/dev/null; " +
-                "killall android.hardware.camera.provider@2.4-service 2>/dev/null; " +
-                "killall android.hardware.camera.provider@2.4-service_64 2>/dev/null; " +
-                "killall vendor.qti.camera.provider@2.4-service_64 2>/dev/null; " +
-                "killall vendor.qti.camera.provider-service_64 2>/dev/null; " +
                 "echo OK"
         val out = shellSu(script)
         Log.i(TAG, "restartCameraApps: ${out.take(200)}")
