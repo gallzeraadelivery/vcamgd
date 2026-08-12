@@ -11,8 +11,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import com.vcamgd.app.VCamApp
-import com.vcamgd.app.camera.KingEngine
-import com.vcamgd.app.camera.ModuleInstaller
+import com.vcamgd.app.camera.VcplaxEngine
 import com.vcamgd.app.camera.VirtualCameraController
 import com.vcamgd.app.camera.VirtualCameraStatus
 import com.vcamgd.app.data.AppPreferences
@@ -31,6 +30,7 @@ data class MainUiState(
     val camera: VirtualCameraStatus = VirtualCameraStatus(),
     val busy: Boolean = false,
     val message: String? = null,
+    /** Zygisk legado — vcplax nao precisa reboot */
     val needsReboot: Boolean = false,
     val moduleMessage: String? = null,
 )
@@ -54,8 +54,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         refresh()
-        // Nao sobe kingvd/su automaticamente no init — evita crash/ANR na abertura.
-        // O motor sobe ao ativar a virtual ou ao tocar em Atualizar/Status.
+        // Nao sobe vcplax no init (Magisk grant pode demorar). Sobe ao ativar / Atualizar.
     }
 
     fun refresh() {
@@ -66,43 +65,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.postValue(_uiState.value?.copy(root = root, message = null))
             }.onFailure {
                 _uiState.postValue(
-                    _uiState.value?.copy(
-                        message = "Falha ao atualizar: ${it.message}",
-                    ),
+                    _uiState.value?.copy(message = "Falha ao atualizar: ${it.message}"),
                 )
             }
         }
     }
 
-    /** Prepara motor proprio (kingvd + Zygisk soft hooks). */
-    fun warmKingEngine() {
+    /** Prepara motor vcplax (APK + root). Sem Magisk ZIP / sem reboot. */
+    fun warmVcplax() {
         viewModelScope.launch {
-            _uiState.postValue(_uiState.value?.copy(busy = true, moduleMessage = "Preparando KingEngine..."))
+            _uiState.postValue(
+                _uiState.value?.copy(busy = true, moduleMessage = "Preparando motor vcplax..."),
+            )
             val result = withContext(Dispatchers.IO) {
-                runCatching { KingEngine.ensureRunning(getApplication()) }
-                    .getOrElse { KingEngine.Result.Failed(it.message ?: "erro") }
+                runCatching { VcplaxEngine.ensureRunning(getApplication()) }
+                    .getOrElse { VcplaxEngine.Result.Failed(it.message ?: "erro") }
             }
             when (result) {
-                is KingEngine.Result.Ok -> {
-                    val pendingReboot = withContext(Dispatchers.IO) {
-                        ModuleInstaller.ensureInstalled(getApplication()) is
-                            ModuleInstaller.Result.InstalledNeedsReboot
-                    }
-                    // So avisa reboot UMA vez se ainda estiver em modules_update
+                is VcplaxEngine.Result.Ok -> {
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
-                            needsReboot = pendingReboot,
-                            moduleMessage = if (pendingReboot) {
-                                "KingEngine ok — reinicie 1x para hooks Zygisk"
-                            } else {
-                                "KingEngine pronto (kingvd + Zygisk soft)"
-                            },
+                            needsReboot = false,
+                            moduleMessage = "Motor vcplax pronto (APK + root, sem modulo)",
                         ),
                     )
                     runCatching { controller.refreshModuleStatus() }
                 }
-                is KingEngine.Result.Failed -> {
+                is VcplaxEngine.Result.Failed -> {
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
@@ -115,7 +105,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun ensureEmbeddedModule() = warmKingEngine()
+    fun warmKingEngine() = warmVcplax()
+    fun ensureEmbeddedModule() = warmVcplax()
 
     fun clearNeedsReboot() {
         _uiState.postValue(_uiState.value?.copy(needsReboot = false))
@@ -143,14 +134,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleVirtualCamera(enable: Boolean) {
         viewModelScope.launch {
-            _uiState.postValue(_uiState.value?.copy(busy = true))
+            _uiState.postValue(_uiState.value?.copy(busy = true, needsReboot = false))
             if (enable) {
                 val boot = withContext(Dispatchers.IO) {
-                    KingEngine.ensureRunning(getApplication())
+                    VcplaxEngine.ensureRunning(getApplication())
                 }
-                if (boot is KingEngine.Result.Failed) {
-                    _uiState.postValue(_uiState.value?.copy(busy = false, needsReboot = false))
-                    toast("Motor: ${boot.reason}")
+                if (boot is VcplaxEngine.Result.Failed) {
+                    _uiState.postValue(_uiState.value?.copy(busy = false))
+                    toast("Root/motor: ${boot.reason}")
                     return@launch
                 }
             }
@@ -165,7 +156,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 controller.disable()
             }
             settings.setVirtualCameraEnabled(result.isSuccess && enable)
-            _uiState.postValue(_uiState.value?.copy(busy = false))
+            _uiState.postValue(_uiState.value?.copy(busy = false, needsReboot = false))
             toast(result.exceptionOrNull()?.message ?: if (enable) "Virtual solicitada" else "Desligado")
         }
     }

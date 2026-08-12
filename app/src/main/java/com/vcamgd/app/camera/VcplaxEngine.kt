@@ -5,22 +5,20 @@ import android.content.SharedPreferences
 import android.os.IBinder
 import android.os.Parcel
 import android.util.Log
-import java.io.BufferedReader
-import java.io.DataOutputStream
+import com.vcamgd.app.root.RootShell
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStreamReader
 import java.util.Random
 import java.util.zip.ZipFile
 
 /**
- * Motor do APK base liberado (com.xiaomi.vlive / vcplax + libvc + shadowhook).
+ * Motor do APK base liberado (vcplax + libvc + shadowhook).
  *
- * Fluxo (igual ao App.onCreate da referencia):
- * 1) Extrai .so do APK para filesDir
- * 2) root: copia para /data/libvc.so, /data/libvc++.so, /data/vcplax
+ * Modelo: APK + root — SEM modulo Magisk/Zygisk e SEM reboot.
+ * 1) Extrai .so do APK
+ * 2) root: /data/libvc.so, /data/libvc++.so, /data/vcplax
  * 3) root: /data/vcplax <serverName> &
- * 4) Binder ServiceManager.getService(serverName) + IMyBinderService
+ * 4) Binder play (transact 11/12/15)
  */
 object VcplaxEngine {
     private const val TAG = "KingVCam-Vcplax"
@@ -29,9 +27,6 @@ object VcplaxEngine {
     private const val IFACE = "com.xiaomi.vlive.IMyBinderService"
 
     @Volatile private var binder: IBinder? = null
-    @Volatile private var suProcess: Process? = null
-    @Volatile private var suOut: DataOutputStream? = null
-    private val suLock = Any()
 
     sealed class Result {
         data object Ok : Result()
@@ -40,17 +35,16 @@ object VcplaxEngine {
 
     fun ensureRunning(context: Context): Result {
         return try {
-            if (!hasRoot()) {
-                return Result.Failed("Root (su) necessario")
+            if (!RootShell.hasRoot(timeoutSec = 6)) {
+                return Result.Failed("Root (su) necessario — conceda no Magisk")
             }
             val abiDir = resolveAbiDir()
             extractNativeLibs(context, abiDir)
             val server = ensureServerName(context)
             deployAndStart(context, abiDir, server)
-            // Aguarda o servico binder (como U.t.E)
-            repeat(20) {
+            repeat(24) {
                 Thread.sleep(250)
-                su("setenforce 0")
+                RootShell.run("setenforce 0", timeoutSec = 3)
                 val last = getService(server)
                 if (last != null) {
                     binder = last
@@ -58,13 +52,13 @@ object VcplaxEngine {
                         last.linkToDeath({ binder = null }, 0)
                     } catch (_: Throwable) {
                     }
-                    su("setenforce 1")
+                    RootShell.run("setenforce 1", timeoutSec = 3)
                     Log.i(TAG, "binder ready server=$server")
                     return Result.Ok
                 }
             }
-            val id = su("id")
-            val enf = su("getenforce")
+            val id = RootShell.run("id", timeoutSec = 4)
+            val enf = RootShell.run("getenforce", timeoutSec = 3)
             Result.Failed(
                 when {
                     !id.contains("uid=0") -> "Root falhou (su)"
@@ -80,16 +74,24 @@ object VcplaxEngine {
     }
 
     fun isAlive(context: Context): Boolean {
+        if (!RootShell.hasRoot(timeoutSec = 3)) return false
         val server = prefs(context).getString(KEY_SERVER, null) ?: return false
-        su("setenforce 0")
+        RootShell.run("setenforce 0", timeoutSec = 2)
         val b = getService(server)
-        su("setenforce 1")
-        if (b == null) return false
+        RootShell.run("setenforce 1", timeoutSec = 2)
+        if (b == null) {
+            // fallback: processo vivo
+            val pid = RootShell.run("pidof vcplax 2>/dev/null", timeoutSec = 3).trim()
+            return pid.isNotEmpty()
+        }
         binder = b
         return true
     }
 
-    /** Inicia virtual com arquivo/URL. Retorno 0 = sucesso tipico na ref. */
+    /**
+     * Inicia virtual com arquivo/URL.
+     * Na referencia: code==0 => "falhou"; qualquer !=0 = OK.
+     */
     fun startPlay(pathOrUrl: String, loop: Boolean = true, autoRotate: Boolean = false): Int {
         val b = binder ?: return -1
         return transactInt(b, 11) { data ->
@@ -99,7 +101,6 @@ object VcplaxEngine {
         }
     }
 
-    /** Para virtual (transact 12). */
     fun stopPlay(): Int {
         val b = binder ?: return -1
         return transactInt(b, 12) { }
@@ -110,18 +111,18 @@ object VcplaxEngine {
         return transactInt(b, 15) { }
     }
 
-    fun shutdown(context: Context) {
+    fun shutdown() {
         try {
             stopPlay()
         } catch (_: Throwable) {
         }
-        su("killall vcplax")
+        RootShell.run("killall vcplax 2>/dev/null", timeoutSec = 4)
         binder = null
         Log.i(TAG, "shutdown")
     }
 
     private fun resolveAbiDir(): String {
-        val out = su("file /system/bin/cameraserver")
+        val out = RootShell.run("file /system/bin/cameraserver 2>/dev/null", timeoutSec = 4)
         return if (out.contains("32-bit")) "armeabi-v7a" else "arm64-v8a"
     }
 
@@ -129,12 +130,10 @@ object VcplaxEngine {
         val base = File(context.filesDir, "vcam-engine/$abi")
         base.mkdirs()
         val names = listOf("libvc.so", "libshadowhook.so", "vcplax.so")
-        // 1) Prefer assets
         var fromAssets = true
         for (n in names) {
-            val assetPath = "vcam-engine/$abi/$n"
             try {
-                context.assets.open(assetPath).use { input ->
+                context.assets.open("vcam-engine/$abi/$n").use { input ->
                     File(base, n).outputStream().use { output -> input.copyTo(output) }
                 }
             } catch (_: Throwable) {
@@ -146,7 +145,6 @@ object VcplaxEngine {
             Log.i(TAG, "extracted from assets abi=$abi")
             return
         }
-        // 2) Fallback: zip do proprio APK (lib/abi/)
         val apk = context.applicationInfo.sourceDir
         ZipFile(apk).use { zip ->
             val prefix = "lib/$abi/"
@@ -166,16 +164,19 @@ object VcplaxEngine {
 
     private fun deployAndStart(context: Context, abi: String, server: String) {
         val base = File(context.filesDir, "vcam-engine/$abi").absolutePath
-        su("killall vcplax")
-        // Limpa residuos de outras vcams que a ref avisa
-        su("chattr -i /data/camera 2>/dev/null; rm -rf /data/camera /data/samera 2>/dev/null")
-        su("cp '$base/libvc.so' /data/libvc.so")
-        su("cp '$base/libshadowhook.so' /data/libvc++.so")
-        su("cp '$base/vcplax.so' /data/vcplax")
-        su("chmod 700 /data/vcplax")
-        // background (igual App.onCreate)
-        su("/data/vcplax $server &")
-        Log.i(TAG, "started /data/vcplax $server")
+        val out = RootShell.run(
+            "killall vcplax 2>/dev/null; " +
+                "chattr -i /data/camera 2>/dev/null; rm -rf /data/camera /data/samera 2>/dev/null; " +
+                "cp '$base/libvc.so' /data/libvc.so; " +
+                "cp '$base/libshadowhook.so' /data/libvc++.so; " +
+                "cp '$base/vcplax.so' /data/vcplax; " +
+                "chmod 700 /data/vcplax; " +
+                "chmod 755 /data/libvc.so /data/libvc++.so; " +
+                "setsid /data/vcplax $server >>/data/local/tmp/vcamgd/vcplax.log 2>&1 < /dev/null & " +
+                "sleep 0.2; pidof vcplax; echo OK",
+            timeoutSec = 12,
+        )
+        Log.i(TAG, "deploy: $out")
     }
 
     private fun ensureServerName(context: Context): String {
@@ -187,7 +188,6 @@ object VcplaxEngine {
         return name
     }
 
-    /** Espelha App.d(): baseia em um servico existente + sufixo aleatorio. */
     private fun inventServerName(): String {
         return try {
             val sm = Class.forName("android.os.ServiceManager")
@@ -213,8 +213,6 @@ object VcplaxEngine {
             repeat(n) { append(alphabet[r.nextInt(alphabet.length)]) }
         }
     }
-
-    private fun hasRoot(): Boolean = su("id").contains("uid=0")
 
     private fun getService(name: String): IBinder? {
         return try {
@@ -244,34 +242,4 @@ object VcplaxEngine {
 
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-
-    private fun su(command: String): String {
-        synchronized(suLock) {
-            return try {
-                if (suProcess == null || suOut == null) {
-                    val p = Runtime.getRuntime().exec("su")
-                    suProcess = p
-                    suOut = DataOutputStream(p.outputStream)
-                }
-                val mark = "EOF_${System.currentTimeMillis()}"
-                val out = suOut!!
-                out.writeBytes("$command\n")
-                out.writeBytes("echo $mark\n")
-                out.flush()
-                val reader = BufferedReader(InputStreamReader(suProcess!!.inputStream))
-                val sb = StringBuilder()
-                while (true) {
-                    val line = reader.readLine() ?: break
-                    if (line == mark) break
-                    sb.append(line).append('\n')
-                }
-                sb.toString().trim()
-            } catch (e: Exception) {
-                Log.w(TAG, "su failed: ${e.message}")
-                suProcess = null
-                suOut = null
-                ""
-            }
-        }
-    }
 }
