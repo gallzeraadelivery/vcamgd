@@ -122,7 +122,7 @@ class VirtualCameraController(private val context: Context) {
         delay(200)
         _status.value = VirtualCameraStatus(
             state = VirtualCameraState.ENABLED,
-            message = "Virtual ON. Feche e abra a camera do telefone.",
+            message = "Virtual ON (inject=${UniversalEngine.isLibVcInjected()}). Feche e abra a camera.",
             usingRealCamera = false,
             moduleInstalled = true,
             zygiskEvent = UniversalEngine.statusLine(context),

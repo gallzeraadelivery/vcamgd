@@ -34,7 +34,7 @@ object VcplaxEngine {
         data class Failed(val reason: String) : Result()
     }
 
-    fun ensureRunning(context: Context): Result {
+    fun ensureRunning(context: Context, restoreEnforcing: Boolean = false): Result {
         return try {
             if (!RootShell.hasRoot(timeoutSec = 6)) {
                 return Result.Failed("Root (su) necessario — conceda no Magisk")
@@ -53,8 +53,11 @@ object VcplaxEngine {
                         last.linkToDeath({ binder = null }, 0)
                     } catch (_: Throwable) {
                     }
-                    RootShell.run("setenforce 1", timeoutSec = 3)
-                    Log.i(TAG, "binder ready server=$server")
+                    // HyperOS/A16: NAO restaurar enforcing aqui — mata o inject
+                    if (restoreEnforcing) {
+                        RootShell.run("setenforce 1", timeoutSec = 3)
+                    }
+                    Log.i(TAG, "binder ready server=$server restoreEnforcing=$restoreEnforcing")
                     return Result.Ok
                 }
             }
@@ -79,9 +82,8 @@ object VcplaxEngine {
         val server = prefs(context).getString(KEY_SERVER, null) ?: return false
         RootShell.run("setenforce 0", timeoutSec = 2)
         val b = getService(server)
-        RootShell.run("setenforce 1", timeoutSec = 2)
+        // Nao volta enforcing — sessao virtual precisa disso no A16
         if (b == null) {
-            // fallback: processo vivo
             val pid = RootShell.run("pidof vcplax 2>/dev/null", timeoutSec = 3).trim()
             return pid.isNotEmpty()
         }
@@ -166,9 +168,12 @@ object VcplaxEngine {
     private fun deployAndStart(context: Context, abi: String, server: String) {
         val base = File(context.filesDir, "vcam-engine/$abi").absolutePath
         val sdk = Build.VERSION.SDK_INT
-        // Labels estilo inject moderno: system_lib_file + exec no /data
-        val out = RootShell.run(
+            // Labels estilo inject moderno: system_lib_file + exec no /data
+            // HyperOS: tambem libera ptrace_scope antes de subir
+            val out = RootShell.run(
             "mkdir -p /data/local/tmp/vcamgd; " +
+                "echo 0 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; " +
+                "setenforce 0; " +
                 "killall vcplax 2>/dev/null; " +
                 "chattr -i /data/camera 2>/dev/null; rm -rf /data/camera /data/samera 2>/dev/null; " +
                 "cp '$base/libvc.so' /data/libvc.so; " +
@@ -178,7 +183,6 @@ object VcplaxEngine {
                 "chmod 755 /data/libvc.so /data/libvc++.so; " +
                 "chcon u:object_r:system_lib_file:s0 /data/vcplax /data/libvc.so /data/libvc++.so 2>/dev/null; " +
                 "chcon u:object_r:system_file:s0 /data/vcplax 2>/dev/null; " +
-                // Android 14+: tambem espelha em tmp com magisk_file
                 "cp /data/libvc.so /data/local/tmp/vcamgd/libvc.so; " +
                 "cp /data/libvc++.so /data/local/tmp/vcamgd/libvc++.so; " +
                 "cp /data/vcplax /data/local/tmp/vcamgd/vcplax; " +
@@ -187,7 +191,7 @@ object VcplaxEngine {
                 "chcon u:object_r:magisk_file:s0 /data/local/tmp/vcamgd /data/local/tmp/vcamgd/* 2>/dev/null; " +
                 "echo SDK=$sdk; " +
                 "setsid /data/vcplax $server >>/data/local/tmp/vcamgd/vcplax.log 2>&1 < /dev/null & " +
-                "sleep 0.35; pidof vcplax; ls -lZ /data/vcplax /data/libvc.so 2>&1 | head -5; echo OK",
+                "sleep 0.45; pidof vcplax; ls -lZ /data/vcplax /data/libvc.so 2>&1 | head -5; echo OK",
             timeoutSec = 14,
         )
         Log.i(TAG, "deploy: $out")
