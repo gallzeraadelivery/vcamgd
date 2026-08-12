@@ -11,8 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
+ * v0.10.8: kinginject stack-path (sem mmap/BTI) + maps sem falso cfi shadow.
  * v0.10.7: kinginject v2 (ELF dlopen + mmap syscall) + diag ki/maps.
- * v0.10.6: su -mm (mount master) — HyperOS Magisk namespace.
  */
 object UniversalEngine {
     private const val TAG = "KingVCam-Universal"
@@ -283,13 +283,14 @@ object UniversalEngine {
             val out = RootShell.runGlobal(
                 "PID=\$(pidof cameraserver | awk '{print \$1}'); " +
                     "if [ -z \"\$PID\" ]; then echo NO_CAM; exit 0; fi; " +
-                    "cat /proc/\$PID/maps 2>/dev/null | grep -iE 'libvc|shadowhook|/dev/vcam|libvc\\+\\+' | head -8; " +
+                    "cat /proc/\$PID/maps 2>/dev/null | grep -E 'libvc\\.so|libvc\\+\\+|/dev/vcam/|libshadowhook\\.so' | head -8; " +
                     "echo END",
                 timeoutSec = 6,
             )
-            out.contains("libvc", ignoreCase = true) ||
-                out.contains("shadowhook", ignoreCase = true) ||
-                out.contains("/dev/vcam")
+            out.contains("libvc.so") ||
+                out.contains("libvc++") ||
+                out.contains("/dev/vcam/") ||
+                out.contains("libshadowhook.so")
         } catch (_: Throwable) {
             false
         }

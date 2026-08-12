@@ -8,9 +8,7 @@
 #include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/mman.h>
 #include <sys/ptrace.h>
-#include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -24,16 +22,15 @@ using regs_t = user_pt_regs;
 #define R3(r) ((r).regs[3])
 #define R4(r) ((r).regs[4])
 #define R5(r) ((r).regs[5])
-#define R8(r) ((r).regs[8])
 #define SP(r) ((r).sp)
 #define PC(r) ((r).pc)
 #define LR(r) ((r).regs[30])
 #else
-#error "arm64 only build used on target device"
+#error "arm64 only"
 #endif
 
-static void die_log(const char* msg, int code) {
-    fprintf(stderr, "kinginject: %s (code=%d errno=%d)\n", msg, code, errno);
+static void logi(const char* msg) {
+    fprintf(stderr, "kinginject: %s\n", msg);
     fflush(stderr);
 }
 
@@ -73,12 +70,11 @@ static std::vector<MapLib> find_libs(pid_t pid, const char* needle) {
         std::string line = maps.substr(pos, eol - pos);
         pos = eol + 1;
         if (line.find(needle) == std::string::npos) continue;
-        if (line.find(" r-xp ") == std::string::npos && line.find(" r--p ") == std::string::npos) continue;
+        if (line.find(" r-xp ") == std::string::npos && line.find(" r-x ") == std::string::npos) continue;
         uintptr_t start = strtoull(line.c_str(), nullptr, 16);
         size_t slash = line.find('/');
         if (!start || slash == std::string::npos) continue;
         std::string path = line.substr(slash);
-        // trim
         while (!path.empty() && (path.back() == ' ' || path.back() == '\r')) path.pop_back();
         bool exists = false;
         for (auto& m : out) {
@@ -93,12 +89,16 @@ static std::vector<MapLib> find_libs(pid_t pid, const char* needle) {
     return out;
 }
 
-static bool maps_has(pid_t pid, const char* key) {
+static bool maps_has_libvc(pid_t pid) {
     char maps_path[64];
     snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
     std::string maps;
     if (!read_all(maps_path, &maps)) return false;
-    return maps.find(key) != std::string::npos;
+    // Nao casar com [anon:cfi shadow]
+    return maps.find("libvc.so") != std::string::npos ||
+           maps.find("/dev/vcam/") != std::string::npos ||
+           maps.find("libvc++.so") != std::string::npos ||
+           maps.find("libshadowhook.so") != std::string::npos;
 }
 
 static uintptr_t elf_sym_offset(const char* path, const char* sym) {
@@ -110,16 +110,9 @@ static uintptr_t elf_sym_offset(const char* path, const char* sym) {
     const Elf64_Shdr* dynsym = nullptr;
     const Elf64_Shdr* dynstr = nullptr;
     for (int i = 0; i < ehdr->e_shnum; ++i) {
-        if (shdr[i].sh_type == SHT_DYNSYM) dynsym = &shdr[i];
-        if (shdr[i].sh_type == SHT_STRTAB && dynsym &&
-            &shdr[dynsym->sh_link] == &shdr[i]) {
-            // handled below
-        }
-    }
-    for (int i = 0; i < ehdr->e_shnum; ++i) {
         if (shdr[i].sh_type == SHT_DYNSYM) {
             dynsym = &shdr[i];
-            if (dynsym->sh_link < ehdr->e_shnum) dynstr = &shdr[dynsym->sh_link];
+            if (dynsym->sh_link < (Elf64_Word)ehdr->e_shnum) dynstr = &shdr[dynsym->sh_link];
             break;
         }
     }
@@ -129,8 +122,7 @@ static uintptr_t elf_sym_offset(const char* path, const char* sym) {
     auto* syms = reinterpret_cast<const Elf64_Sym*>(data.data() + dynsym->sh_offset);
     for (size_t i = 0; i < count; ++i) {
         if (!syms[i].st_name) continue;
-        const char* name = strs + syms[i].st_name;
-        if (strcmp(name, sym) == 0 && syms[i].st_value) {
+        if (strcmp(strs + syms[i].st_name, sym) == 0 && syms[i].st_value) {
             return (uintptr_t)syms[i].st_value;
         }
     }
@@ -147,17 +139,19 @@ static bool set_regs(pid_t pid, regs_t* regs) {
     return ptrace(PTRACE_SETREGSET, pid, (void*)(uintptr_t)NT_PRSTATUS, &io) == 0;
 }
 
-static bool wait_stop(pid_t pid) {
+static bool wait_stop(pid_t pid, int* sig_out) {
     int st = 0;
     while (true) {
         if (waitpid(pid, &st, __WALL) < 0) return false;
-        if (WIFSTOPPED(st)) return true;
+        if (WIFSTOPPED(st)) {
+            if (sig_out) *sig_out = WSTOPSIG(st);
+            return true;
+        }
         if (WIFEXITED(st) || WIFSIGNALED(st)) return false;
     }
 }
 
 static bool poke(pid_t pid, uintptr_t addr, const void* data, size_t len) {
-    // Prefer process_vm_writev
     iovec local{(void*)data, len};
     iovec remote{(void*)addr, len};
     ssize_t n = process_vm_writev(pid, &local, 1, &remote, 1, 0);
@@ -181,7 +175,11 @@ static bool poke(pid_t pid, uintptr_t addr, const void* data, size_t len) {
     return true;
 }
 
-// Make remote call; LR=0 causes SIGSEGV stop after return.
+/**
+ * Chama funcao remota. LR aponta para um endereco invalido alinhado para
+ * parar com SIGSEGV apos o retorno (tecnica classica). Em Android 16 com BTI,
+ * o PC deve ser o inicio da funcao (landing pad) — nunca gadget no meio.
+ */
 static bool remote_call(pid_t pid, regs_t* saved, uintptr_t fn, uintptr_t* args, int nargs, uintptr_t* ret) {
     regs_t r = *saved;
     if (nargs > 0) R0(r) = args[0];
@@ -190,87 +188,56 @@ static bool remote_call(pid_t pid, regs_t* saved, uintptr_t fn, uintptr_t* args,
     if (nargs > 3) R3(r) = args[3];
     if (nargs > 4) R4(r) = args[4];
     if (nargs > 5) R5(r) = args[5];
-    SP(r) = SP(*saved) & ~0xfull;
+    // espaco extra na stack
+    SP(r) = (SP(*saved) - 0x200) & ~0xfull;
     PC(r) = fn;
-    LR(r) = 0;
-    if (!set_regs(pid, &r)) return false;
-    if (ptrace(PTRACE_CONT, pid, nullptr, nullptr) != 0) return false;
-    if (!wait_stop(pid)) return false;
-    if (!get_regs(pid, &r)) return false;
+    LR(r) = 0;  // fault on return
+    if (!set_regs(pid, &r)) {
+        logi("setregs before call failed");
+        return false;
+    }
+    if (ptrace(PTRACE_CONT, pid, nullptr, nullptr) != 0) {
+        logi("CONT before call failed");
+        return false;
+    }
+    int sig = 0;
+    if (!wait_stop(pid, &sig)) {
+        logi("wait after call failed");
+        return false;
+    }
+    if (!get_regs(pid, &r)) {
+        logi("getregs after call failed");
+        return false;
+    }
     if (ret) *ret = R0(r);
-    return set_regs(pid, saved);
+    fprintf(stderr, "kinginject: call ret=%p stop_sig=%d\n", (void*)R0(r), sig);
+    fflush(stderr);
+    // restaura e engole o sinal (SIGSEGV do LR=0)
+    if (!set_regs(pid, saved)) return false;
+    return true;
 }
 
-// Remote mmap via direct syscall (x8=__NR_mmap), avoids needing libc symbol.
-static bool remote_mmap_syscall(pid_t pid, regs_t* saved, size_t len, uintptr_t* out) {
-    // Find a SVC gadget: scan libc executable for "svc #0; ret" bytes: 01 00 00 d4 c0 03 5f d6
-    auto libcs = find_libs(pid, "libc.so");
-    if (libcs.empty()) {
-        die_log("no libc in remote", 21);
-        return false;
-    }
-    uintptr_t svc = 0;
-    for (auto& lib : libcs) {
-        std::string blob;
-        if (!read_all(lib.path.c_str(), &blob)) continue;
-        const uint8_t pat[] = {0x01, 0x00, 0x00, 0xd4};  // svc #0
-        for (size_t i = 0; i + 4 < blob.size(); ++i) {
-            if (memcmp(blob.data() + i, pat, 4) == 0) {
-                svc = lib.base + i;
-                break;
-            }
+static uintptr_t resolve_sym(pid_t pid, const char* needle, const char* sym) {
+    auto libs = find_libs(pid, needle);
+    for (auto& lib : libs) {
+        uintptr_t off = elf_sym_offset(lib.path.c_str(), sym);
+        if (off) {
+            fprintf(stderr, "kinginject: %s!%s base=%p off=%p path=%s\n",
+                    needle, sym, (void*)lib.base, (void*)off, lib.path.c_str());
+            fflush(stderr);
+            return lib.base + off;
         }
-        if (svc) break;
     }
-    if (!svc) {
-        // fallback: use libc mmap symbol
-        for (auto& lib : libcs) {
-            uintptr_t off = elf_sym_offset(lib.path.c_str(), "mmap");
-            if (off) {
-                uintptr_t args[] = {
-                    0, len, (uintptr_t)(PROT_READ | PROT_WRITE),
-                    (uintptr_t)(MAP_PRIVATE | MAP_ANONYMOUS), (uintptr_t)-1, 0,
-                };
-                return remote_call(pid, saved, lib.base + off, args, 6, out);
-            }
-        }
-        die_log("no svc gadget/mmap", 22);
-        return false;
-    }
-
-    regs_t r = *saved;
-    R0(r) = 0;
-    R1(r) = len;
-    R2(r) = PROT_READ | PROT_WRITE;
-    R3(r) = MAP_PRIVATE | MAP_ANONYMOUS;
-    R4(r) = (uint64_t)-1;
-    R5(r) = 0;
-    R8(r) = __NR_mmap;
-    PC(r) = svc;
-    LR(r) = 0;
-    SP(r) = SP(*saved) & ~0xfull;
-    if (!set_regs(pid, &r)) return false;
-    if (ptrace(PTRACE_CONT, pid, nullptr, nullptr) != 0) return false;
-    if (!wait_stop(pid)) return false;
-    if (!get_regs(pid, &r)) return false;
-    *out = R0(r);
-    return set_regs(pid, saved) && *out && *out != (uintptr_t)-1;
+    return 0;
 }
 
 static uintptr_t resolve_dlopen(pid_t pid) {
-    const char* names[] = {"dlopen", "android_dlopen_ext", "__loader_dlopen", nullptr};
-    const char* needles[] = {"libdl_android.so", "libdl.so", "linker64", "linker", nullptr};
-    for (int n = 0; needles[n]; ++n) {
-        auto libs = find_libs(pid, needles[n]);
-        for (auto& lib : libs) {
-            for (int s = 0; names[s]; ++s) {
-                uintptr_t off = elf_sym_offset(lib.path.c_str(), names[s]);
-                if (off) {
-                    fprintf(stderr, "kinginject: dlopen via %s!%s base=%p off=%p\n",
-                            lib.path.c_str(), names[s], (void*)lib.base, (void*)off);
-                    return lib.base + off;
-                }
-            }
+    const char* syms[] = {"dlopen", "android_dlopen_ext", "__loader_dlopen", nullptr};
+    const char* libs[] = {"libdl_android.so", "libdl.so", "linker64", nullptr};
+    for (int l = 0; libs[l]; ++l) {
+        for (int s = 0; syms[s]; ++s) {
+            uintptr_t a = resolve_sym(pid, libs[l], syms[s]);
+            if (a) return a;
         }
     }
     return 0;
@@ -278,65 +245,81 @@ static uintptr_t resolve_dlopen(pid_t pid) {
 
 static int inject(pid_t pid, const char* lib) {
     fprintf(stderr, "kinginject: target pid=%d lib=%s\n", pid, lib);
-    if (maps_has(pid, "libvc.so") || maps_has(pid, lib)) {
-        fprintf(stderr, "kinginject: already loaded\n");
+    fflush(stderr);
+    if (maps_has_libvc(pid)) {
+        logi("already loaded");
         return 0;
     }
     if (access(lib, R_OK) != 0) {
-        die_log("lib not readable", 10);
+        logi("lib not readable");
         return 10;
     }
 
     uintptr_t dlopen_addr = resolve_dlopen(pid);
     if (!dlopen_addr) {
-        die_log("resolve dlopen failed", 2);
+        logi("resolve dlopen failed");
         return 2;
     }
 
     if (ptrace(PTRACE_ATTACH, pid, nullptr, nullptr) != 0) {
-        die_log("PTRACE_ATTACH failed", 3);
+        fprintf(stderr, "kinginject: ATTACH failed errno=%d\n", errno);
         return 3;
     }
-    if (!wait_stop(pid)) {
+    int sig = 0;
+    if (!wait_stop(pid, &sig)) {
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
-        die_log("wait attach failed", 4);
+        logi("wait attach failed");
         return 4;
     }
+    fprintf(stderr, "kinginject: attached stop_sig=%d\n", sig);
+    fflush(stderr);
 
     regs_t saved{};
     if (!get_regs(pid, &saved)) {
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
-        die_log("getregs failed", 5);
+        logi("getregs failed");
         return 5;
     }
 
-    uintptr_t remote = 0;
-    if (!remote_mmap_syscall(pid, &saved, 4096, &remote)) {
-        ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
-        die_log("remote mmap failed", 6);
-        return 6;
+    // HyperOS A16 / CFI+BTI: NAO usar gadget svc/mmap no meio do codigo.
+    // Escreve o path na stack remota (sempre gravavel) e chama dlopen.
+    const size_t path_len = strlen(lib) + 1;
+    uintptr_t remote_path = (SP(saved) - 0x800 - path_len) & ~0xfull;
+    if (!poke(pid, remote_path, lib, path_len)) {
+        // tenta um pouco mais abaixo
+        remote_path = (SP(saved) - 0x1000) & ~0xfull;
+        if (!poke(pid, remote_path, lib, path_len)) {
+            ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
+            logi("poke stack path failed");
+            return 7;
+        }
     }
-    fprintf(stderr, "kinginject: remote_buf=%p\n", (void*)remote);
-
-    if (!poke(pid, remote, lib, strlen(lib) + 1)) {
-        ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
-        die_log("poke path failed", 7);
-        return 7;
-    }
+    fprintf(stderr, "kinginject: path@stack=%p\n", (void*)remote_path);
+    fflush(stderr);
 
     uintptr_t handle = 0;
-    uintptr_t args[] = {remote, (uintptr_t)RTLD_NOW};
+    uintptr_t args[] = {remote_path, (uintptr_t)RTLD_NOW};
     if (!remote_call(pid, &saved, dlopen_addr, args, 2, &handle)) {
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
-        die_log("dlopen call failed", 8);
+        logi("dlopen call failed");
         return 8;
     }
 
+    // Se android_dlopen_ext for necessario, handle pode ser 0 com dlopen em namespace isolado.
+    // Tenta de novo com RTLD_GLOBAL|RTLD_NOW (0x100|2) se handle nulo.
+    if (!handle) {
+        uintptr_t args2[] = {remote_path, (uintptr_t)(RTLD_NOW | 0x100)};
+        remote_call(pid, &saved, dlopen_addr, args2, 2, &handle);
+    }
+
     ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
-    bool in_maps = maps_has(pid, "libvc") || maps_has(pid, lib);
-    fprintf(stderr, "kinginject: handle=%p maps=%d\n", (void*)handle, in_maps ? 1 : 0);
+
+    bool ok = maps_has_libvc(pid);
+    fprintf(stderr, "kinginject: handle=%p maps_libvc=%d\n", (void*)handle, ok ? 1 : 0);
+    fflush(stderr);
+    if (ok) return 0;
     if (!handle) return 9;
-    return in_maps ? 0 : 11;
+    return 11;  // handle != 0 mas maps ainda sem path (pode ser memfd)
 }
 
 int main(int argc, char** argv) {
@@ -358,7 +341,7 @@ int main(int argc, char** argv) {
         pid = (pid_t)atoi(b);
     }
     if (pid <= 0) {
-        die_log("no cameraserver", 1);
+        logi("no cameraserver");
         return 1;
     }
     return inject(pid, lib);

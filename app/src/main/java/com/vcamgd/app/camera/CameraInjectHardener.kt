@@ -197,7 +197,6 @@ object CameraInjectHardener {
                 "echo CAM=\$PID KI=\$KI; " +
                 "if [ -z \"\$PID\" ]; then echo NO_CAM; exit 0; fi; " +
                 ": > /data/local/tmp/vcamgd/kinginject.log; " +
-                "kill -STOP \$PID 2>/dev/null; " +
                 "BEST_RC=99; " +
                 "for lib in /dev/vcam/libvc.so /system/lib64/libvc.so /data/libvc.so /data/adb/vcamgd/libvc.so; do " +
                 "if [ -f \$lib ]; then " +
@@ -207,8 +206,9 @@ object CameraInjectHardener {
                 "if [ \$RC -lt \$BEST_RC ]; then BEST_RC=\$RC; fi; " +
                 "if [ \$RC -eq 0 ]; then break; fi; " +
                 "fi; done; " +
-                "kill -CONT \$PID 2>/dev/null; " +
-                "MAPS=\$(cat /proc/\$PID/maps 2>/dev/null | grep -iE 'libvc|shadowhook|/dev/vcam' | head -3 | tr '\\n' ','); " +
+                // sem kill -STOP: no A16 com CFI atrapalha o attach
+                // Nao usar 'shadow' sozinho — casa com [anon:cfi shadow]
+                "MAPS=\$(cat /proc/\$PID/maps 2>/dev/null | grep -E 'libvc\\.so|libvc\\+\\+|/dev/vcam/|libshadowhook\\.so' | head -3 | tr '\\n' ','); " +
                 "echo KI_RC=\$BEST_RC; echo MAPS=\${MAPS:-empty}; " +
                 "if [ -f /dev/vcam/libvc++.so ]; then \"\$KI\" --pid \$PID --lib /dev/vcam/libvc++.so >>/data/local/tmp/vcamgd/kinginject.log 2>&1; fi; " +
                 "echo KING_DONE",
@@ -228,9 +228,9 @@ object CameraInjectHardener {
                 "echo mm=$mm; " +
                 "PID=\$(pidof cameraserver 2>/dev/null | awk '{print \$1}'); echo cam=\$PID; " +
                 "echo vcplax=\$(pidof vcplax 2>/dev/null); " +
-                "MAPS=\$(cat /proc/\$PID/maps 2>/dev/null | grep -iE 'libvc|shadow|vcam' | head -3 | tr '\\n' ','); " +
+                "MAPS=\$(cat /proc/\$PID/maps 2>/dev/null | grep -E 'libvc\\.so|libvc\\+\\+|/dev/vcam/|libshadowhook\\.so' | head -3 | tr '\\n' ','); " +
                 "echo maps=\${MAPS:-empty}; " +
-                "echo ki=\$(grep -E 'RC=|attach|dlopen|handle|code=' /data/local/tmp/vcamgd/kinginject.log 2>/dev/null | tail -n 4 | tr '\\n' ';'); " +
+                "echo ki=\$(grep -E 'RC=|ATTACH|attach|dlopen|handle|path@|call ret|code=|maps_libvc' /data/local/tmp/vcamgd/kinginject.log 2>/dev/null | tail -n 6 | tr '\\n' ';'); " +
                 "echo context=\$(cat /proc/\$PID/attr/current 2>/dev/null); " +
                 "echo vx=\$(tail -n 2 /data/local/tmp/vcamgd/vcplax.log 2>/dev/null | tr '\\n' ';')",
             timeoutSec = 12,
