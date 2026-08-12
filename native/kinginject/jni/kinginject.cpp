@@ -93,15 +93,38 @@ static std::vector<MapLib> find_libs(pid_t pid, const char* needle) {
     return out;
 }
 
-static bool maps_has_libvc(pid_t pid) {
+static bool maps_contains(pid_t pid, const char* needle) {
     char maps_path[64];
     snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
     std::string maps;
     if (!read_all(maps_path, &maps)) return false;
-    return maps.find("libvc.so") != std::string::npos ||
-           maps.find("/dev/vcam/") != std::string::npos ||
-           maps.find("libvc++.so") != std::string::npos ||
-           maps.find("libshadowhook.so") != std::string::npos;
+    return maps.find(needle) != std::string::npos;
+}
+
+/** So libvc.so real — NAO shadowhook/libvc++/qualquer /dev/vcam/. */
+static bool maps_has_libvc_so(pid_t pid) {
+    char maps_path[64];
+    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
+    std::string maps;
+    if (!read_all(maps_path, &maps)) return false;
+    size_t pos = 0;
+    while (pos < maps.size()) {
+        size_t eol = maps.find('\n', pos);
+        if (eol == std::string::npos) eol = maps.size();
+        std::string line = maps.substr(pos, eol - pos);
+        pos = eol + 1;
+        if (line.find("libvc.so") == std::string::npos) continue;
+        if (line.find("libvc++") != std::string::npos) continue;
+        return true;
+    }
+    return false;
+}
+
+static bool maps_has_basename(pid_t pid, const char* lib_path) {
+    const char* base = strrchr(lib_path, '/');
+    base = base ? base + 1 : lib_path;
+    if (!strcmp(base, "libvc.so")) return maps_has_libvc_so(pid);
+    return maps_contains(pid, base);
 }
 
 static uintptr_t elf_sym_offset(const char* path, const char* sym) {
@@ -244,7 +267,9 @@ static uintptr_t resolve_dlopen(pid_t pid) {
 static int inject(pid_t pid, const char* lib) {
     fprintf(stderr, "kinginject: target pid=%d lib=%s\n", pid, lib);
     fflush(stderr);
-    if (maps_has_libvc(pid)) {
+    // Checa ESTA lib (basename). Antes: qualquer /dev/vcam/ => "already loaded"
+    // e libvc.so nunca era injetado apos shadowhook.
+    if (maps_has_basename(pid, lib)) {
         logi("already loaded");
         return 0;
     }
@@ -323,8 +348,8 @@ static int inject(pid_t pid, const char* lib) {
 
     ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
 
-    bool ok = maps_has_libvc(pid);
-    fprintf(stderr, "kinginject: handle=%p maps_libvc=%d\n", (void*)handle, ok ? 1 : 0);
+    bool ok = maps_has_basename(pid, lib);
+    fprintf(stderr, "kinginject: handle=%p maps_ok=%d\n", (void*)handle, ok ? 1 : 0);
     fflush(stderr);
     if (ok) return 0;
     if (!handle || handle == remote_path) return 9;

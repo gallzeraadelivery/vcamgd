@@ -200,24 +200,34 @@ object CameraInjectHardener {
                 "for p in /data/local/tmp/vcamgd/kinginject /data/adb/vcamgd/kinginject; do " +
                 "[ -x \$p ] && KI=\$p; done; " +
                 "if [ -z \"\$KI\" ]; then echo NO_KINGINJECT; exit 0; fi; " +
+                // Espera cameraserver estavel (evita NO_CAM apos bounce)
+                "PID=; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do " +
                 "PID=\$(pidof cameraserver | awk '{print \$1}'); " +
+                "[ -n \"\$PID\" ] && break; sleep 0.25; done; " +
                 "echo CAM=\$PID KI=\$KI; " +
                 "if [ -z \"\$PID\" ]; then echo NO_CAM; exit 0; fi; " +
+                "sleep 0.35; " +
                 ": > /data/local/tmp/vcamgd/kinginject.log; " +
                 "BEST_RC=99; " +
-                // Ordem: shadowhook de /dev/vcam, depois libvc de /dev/vcam (estavel)
-                "for lib in /dev/vcam/libshadowhook.so /dev/vcam/libvc++.so /dev/vcam/libvc.so " +
-                "/data/adb/vcamgd/libvc++.so /data/adb/vcamgd/libvc.so; do " +
+                // shadowhook, depois libvc.so OBRIGATORIO (kinginject agora checa basename)
+                "for lib in /dev/vcam/libshadowhook.so /dev/vcam/libvc++.so /dev/vcam/libvc.so; do " +
                 "if [ -f \$lib ]; then " +
                 "echo TRY=\$lib >>/data/local/tmp/vcamgd/kinginject.log; " +
                 "\"\$KI\" --pid \$PID --lib \$lib >>/data/local/tmp/vcamgd/kinginject.log 2>&1; " +
                 "RC=\$?; echo RC=\$RC lib=\$lib >>/data/local/tmp/vcamgd/kinginject.log; " +
-                "case \$lib in *libvc.so) if [ \$RC -lt \$BEST_RC ]; then BEST_RC=\$RC; fi ;; esac; " +
+                "case \$lib in *libvc.so) BEST_RC=\$RC ;; esac; " +
                 "fi; done; " +
+                // Re-try libvc se maps ainda sem libvc.so
+                "HAS=\$(cat /proc/\$PID/maps 2>/dev/null | grep 'libvc\\.so' | grep -v 'libvc++' | head -1); " +
+                "if [ -z \"\$HAS\" ] && [ -f /dev/vcam/libvc.so ]; then " +
+                "echo RETRY_LIBVC >>/data/local/tmp/vcamgd/kinginject.log; " +
+                "\"\$KI\" --pid \$PID --lib /dev/vcam/libvc.so >>/data/local/tmp/vcamgd/kinginject.log 2>&1; " +
+                "BEST_RC=\$?; echo RC=\$BEST_RC lib=/dev/vcam/libvc.so >>/data/local/tmp/vcamgd/kinginject.log; " +
+                "fi; " +
                 "MAPS=\$(cat /proc/\$PID/maps 2>/dev/null | grep -E 'libvc\\.so' | grep -v 'libvc++' | head -3 | tr '\\n' ','); " +
                 "echo KI_RC=\$BEST_RC; echo MAPS=\${MAPS:-empty}; " +
                 "echo KING_DONE",
-            timeoutSec = 30,
+            timeoutSec = 35,
         )
         Log.i(TAG, "runKingInject: ${out.take(500)}")
         runCatching {
