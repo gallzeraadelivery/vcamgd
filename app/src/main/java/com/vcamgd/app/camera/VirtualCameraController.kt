@@ -153,8 +153,9 @@ class VirtualCameraController(private val context: Context) {
         _status.value = VirtualCameraStatus(
             state = VirtualCameraState.ENABLED,
             message = if (stillInjected) {
-                "Virtual ON (inject=true). Feche a camera do sistema e abra de novo. " +
-                    "Se der erro de conexao, espere 5s e abra outra vez."
+                "Virtual ON (inject=true play=${UniversalEngine.lastDiag.detail}). " +
+                    "Feche a camera, espere 3s, abra de novo. " +
+                    "Se ainda for a camera real, toque Virtual no overlay."
             } else {
                 "Virtual parcial (inject=false) — tente desligar/ligar."
             },
@@ -237,7 +238,20 @@ class VirtualCameraController(private val context: Context) {
                 timeoutSec = 14,
             )
             Log.i("KingVCam", "stageLocalToPath: ${out.take(240)}")
-            if (out.contains("OK")) dest else null
+            if (out.contains("OK")) {
+                // Overlay/switchVirtual precisam do path absoluto, nao content://
+                context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("uri", dest)
+                    .putString("source", "local")
+                    .putBoolean("enabled", true)
+                    .putBoolean("virtual", true)
+                    .putString("mode", "virtual")
+                    .apply()
+                dest
+            } else {
+                null
+            }
         } catch (t: Throwable) {
             Log.e("KingVCam", "stageLocalToPath", t)
             null

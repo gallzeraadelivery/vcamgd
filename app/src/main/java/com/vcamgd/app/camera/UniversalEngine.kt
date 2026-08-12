@@ -11,8 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
+ * v0.10.11: relink vcplax apos inject + play multi-path (video real).
  * v0.10.10: pos-inject — shadowhook primeiro, video legivel, force-stop enxuto.
- * v0.10.9: fix load-bias libdl (r--p+r-xp) — PC dlopen errado no A16.
  */
 object UniversalEngine {
     private const val TAG = "KingVCam-Universal"
@@ -129,37 +129,25 @@ object UniversalEngine {
                 )
             }
 
-            var code = VcplaxEngine.startPlay(pathOrUrl, loop = true, autoRotate = false)
-            Log.i(TAG, "startPlay#1=$code path=$pathOrUrl")
-            if (code == 0 || code == -1) {
-                Thread.sleep(400)
-                CameraInjectHardener.keepWindowAlive()
-                appContext?.let { VcplaxEngine.ensureRunning(it, restoreEnforcing = false) }
-                code = VcplaxEngine.startPlay(pathOrUrl, loop = true, autoRotate = false)
-                Log.i(TAG, "startPlay#2=$code")
-            }
-            // Terceiro play apos settle — HyperOS as vezes ignora o primeiro
-            Thread.sleep(500)
-            CameraInjectHardener.keepWindowAlive()
-            val code3 = VcplaxEngine.startPlay(pathOrUrl, loop = true, autoRotate = false)
-            if (code3 != 0) code = code3
-            Log.i(TAG, "startPlay#3=$code3")
+            var code = playWithFallbacks(pathOrUrl)
+            Log.i(TAG, "startPlay result=$code path=$pathOrUrl")
 
             // Confirma cameraserver ainda vivo (libvc quebrado as vezes mata o processo)
             val camPid = RootShell.runGlobal("pidof cameraserver 2>/dev/null", timeoutSec = 3).trim()
-            if (camPid.isEmpty() || camPid.contains("NO_") || !camPid.any { it.isDigit() }) {
+            if (!camPid.any { it.isDigit() }) {
                 Log.w(TAG, "cameraserver morreu apos inject/play — re-inject")
                 if (ensureInjected(retries = 2)) {
                     Thread.sleep(400)
-                    code = VcplaxEngine.startPlay(pathOrUrl, loop = true, autoRotate = false)
+                    code = playWithFallbacks(pathOrUrl)
                 }
             }
 
+            val status = VcplaxEngine.playStatus()
             val alive = RootShell.run("pidof vcplax 2>/dev/null", timeoutSec = 3).trim().isNotEmpty()
             val injected = isLibVcInjected()
             lastDiag = lastDiag.copy(
                 engine = "vcplax",
-                detail = "play=$code inject=$injected alive=$alive " +
+                detail = "play=$code status=$status inject=$injected alive=$alive " +
                     "hyper=${CameraInjectHardener.isHyperOsFamily()}",
             )
 
@@ -168,7 +156,7 @@ object UniversalEngine {
                 Result.Ok
             } else {
                 stopWatchdog()
-                Result.Failed("startPlay falhou (code=$code inject=$injected)")
+                Result.Failed("startPlay falhou (code=$code status=$status inject=$injected)")
             }
         } catch (t: Throwable) {
             Log.e(TAG, "startPlay crash-guard", t)
@@ -248,14 +236,17 @@ object UniversalEngine {
                     Thread.sleep(250)
                     if (isLibVcInjected()) {
                         Log.i(TAG, "libvc injected (kinginject-early) attempt=${attempt + 1}")
-                        return true
+                        // Reatacha vcplax ao cameraserver NOVO — senao play nao alimenta o libvc
+                        relinkVcplaxAfterInject()
+                        return isLibVcInjected()
                     }
                 }
 
                 // 1) deixa o vcplax tentar sozinho apos bounce
                 if (isLibVcInjected()) {
                     Log.i(TAG, "libvc injected (vcplax) attempt=${attempt + 1}")
-                    return true
+                    relinkVcplaxAfterInject()
+                    return isLibVcInjected()
                 }
 
                 // 2) reinicia daemon + redeploy /dev
@@ -278,14 +269,18 @@ object UniversalEngine {
                 Thread.sleep(300)
                 if (isLibVcInjected()) {
                     Log.i(TAG, "libvc injected (kinginject) attempt=${attempt + 1}")
-                    return true
+                    relinkVcplaxAfterInject()
+                    return isLibVcInjected()
                 }
 
                 if (attempt >= 1 && ctx != null) {
                     VcplaxEngine.restartFromAdbPath(ctx)
                     Thread.sleep(500)
                     CameraInjectHardener.runKingInject()
-                    if (isLibVcInjected()) return true
+                    if (isLibVcInjected()) {
+                        relinkVcplaxAfterInject()
+                        return isLibVcInjected()
+                    }
                 }
             }
             val diag = CameraInjectHardener.snapshotDiag()
@@ -298,6 +293,70 @@ object UniversalEngine {
             Log.e(TAG, "ensureInjected crash-guard", t)
             false
         }
+    }
+
+    /**
+     * Apos bounce+kinginject, o vcplax antigo fica dessincronizado do PID novo.
+     * Reinicia o daemon para religar o canal de play ao libvc injetado.
+     */
+    private fun relinkVcplaxAfterInject() {
+        val ctx = appContext ?: return
+        CameraInjectHardener.keepWindowAlive()
+        // Garante libshadowhook.so no nome que o linker/libvc espera
+        RootShell.runGlobal(
+            "cp -f /data/libvc++.so /data/libshadowhook.so 2>/dev/null; " +
+                "cp -f /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so 2>/dev/null; " +
+                "cp -f /data/libvc++.so /system/lib64/libshadowhook.so 2>/dev/null; " +
+                "chmod 755 /data/libshadowhook.so /dev/vcam/libshadowhook.so 2>/dev/null; " +
+                "chcon u:object_r:system_lib_file:s0 /data/libshadowhook.so /dev/vcam/libshadowhook.so 2>/dev/null; " +
+                "true",
+            timeoutSec = 6,
+        )
+        VcplaxEngine.ensureRunning(ctx, restoreEnforcing = false)
+        Thread.sleep(500)
+        // Se o relink do vcplax sobrescreveu/perdeu o map, re-aplica kinginject
+        if (!isLibVcInjected()) {
+            Log.w(TAG, "relink perdeu inject — kinginject de novo")
+            CameraInjectHardener.runKingInject()
+            Thread.sleep(300)
+        }
+    }
+
+    /** stop + play em varios paths (cameraserver/HyperOS e seletivo). */
+    private fun playWithFallbacks(primary: String): Int {
+        CameraInjectHardener.keepWindowAlive()
+        appContext?.let { VcplaxEngine.ensureRunning(it, restoreEnforcing = false) }
+        runCatching { VcplaxEngine.stopPlay() }
+        Thread.sleep(200)
+
+        val candidates = linkedSetOf(
+            primary,
+            "/dev/vcam/current.mp4",
+            "/data/local/tmp/vcamgd/current.mp4",
+            "/data/local/tmp/current.mp4",
+            "/data/adb/vcamgd/current.mp4",
+        )
+        var best = -1
+        for (path in candidates) {
+            val exists = RootShell.runGlobal(
+                "if [ -f '$path' ]; then echo YES; wc -c < '$path'; else echo NO; fi",
+                timeoutSec = 4,
+            )
+            if (!exists.contains("YES")) continue
+            val code = VcplaxEngine.startPlay(path, loop = true, autoRotate = false)
+            Log.i(TAG, "play try path=$path code=$code exists=${exists.take(40)}")
+            if (code != 0 && code != -1) {
+                Thread.sleep(250)
+                val st = VcplaxEngine.playStatus()
+                Log.i(TAG, "playStatus=$st for $path")
+                return code
+            }
+            if (code != -1) best = code
+            Thread.sleep(150)
+        }
+        // ultimo recurso: primary mesmo se size check falhou
+        val code = VcplaxEngine.startPlay(primary, loop = true, autoRotate = false)
+        return if (code != -1) code else best
     }
 
     fun isLibVcInjected(): Boolean {

@@ -214,8 +214,10 @@ object VcplaxEngine {
                 "mkdir -p /dev/vcam; " +
                 "cp /data/libvc.so /dev/vcam/libvc.so; " +
                 "cp /data/libvc++.so /dev/vcam/libvc++.so; " +
-                "chmod 755 /dev/vcam /dev/vcam/libvc.so /dev/vcam/libvc++.so; " +
-                "chcon u:object_r:system_lib_file:s0 /dev/vcam/libvc.so /dev/vcam/libvc++.so 2>/dev/null; " +
+                "cp /data/libvc++.so /data/libshadowhook.so; " +
+                "cp /data/libvc++.so /dev/vcam/libshadowhook.so; " +
+                "chmod 755 /dev/vcam /dev/vcam/libvc.so /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so /data/libshadowhook.so; " +
+                "chcon u:object_r:system_lib_file:s0 /dev/vcam/libvc.so /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so /data/libshadowhook.so 2>/dev/null; " +
                 "echo SDK=$sdk; " +
                 "setsid /data/vcplax $server >>/data/local/tmp/vcamgd/vcplax.log 2>&1 < /dev/null & " +
                 "sleep 0.45; pidof vcplax; ls -lZ /data/vcplax /data/libvc.so /dev/vcam/libvc.so 2>&1 | head -8; echo OK",

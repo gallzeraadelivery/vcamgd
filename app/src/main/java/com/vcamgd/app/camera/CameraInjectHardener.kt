@@ -155,9 +155,11 @@ object CameraInjectHardener {
                 "cp -f /data/vcplax /data/adb/vcamgd/vcplax 2>/dev/null; " +
                 "cp -f /data/libvc.so /dev/vcam/libvc.so; " +
                 "cp -f /data/libvc++.so /dev/vcam/libvc++.so; " +
-                "chmod 755 /data/libvc.so /data/libvc++.so /dev/vcam /dev/vcam/libvc.so /dev/vcam/libvc++.so 2>/dev/null; " +
+                "cp -f /data/libvc++.so /data/libshadowhook.so; " +
+                "cp -f /data/libvc++.so /dev/vcam/libshadowhook.so; " +
+                "chmod 755 /data/libvc.so /data/libvc++.so /data/libshadowhook.so /dev/vcam /dev/vcam/libvc.so /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so 2>/dev/null; " +
                 "chmod 700 /data/vcplax /data/local/tmp/vcamgd/kinginject /data/adb/vcamgd/kinginject 2>/dev/null; " +
-                "chcon u:object_r:system_lib_file:s0 /data/libvc.so /data/libvc++.so /dev/vcam/libvc.so /dev/vcam/libvc++.so 2>/dev/null; " +
+                "chcon u:object_r:system_lib_file:s0 /data/libvc.so /data/libvc++.so /data/libshadowhook.so /dev/vcam/libvc.so /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so 2>/dev/null; " +
                 "chcon u:object_r:system_file:s0 /data/vcplax /data/local/tmp/vcamgd/kinginject 2>/dev/null; " +
                 "chcon u:object_r:magisk_file:s0 /data/adb/vcamgd /data/adb/vcamgd/* 2>/dev/null; " +
                 // bind live em /system/lib64 (ns do init) — sem reboot
@@ -199,7 +201,8 @@ object CameraInjectHardener {
                 ": > /data/local/tmp/vcamgd/kinginject.log; " +
                 "BEST_RC=99; " +
                 // Ordem critica: shadowhook (libvc++) ANTES de libvc
-                "for lib in /dev/vcam/libvc++.so /data/libvc++.so /data/adb/vcamgd/libvc++.so " +
+                "for lib in /dev/vcam/libshadowhook.so /data/libshadowhook.so " +
+                "/dev/vcam/libvc++.so /data/libvc++.so /data/adb/vcamgd/libvc++.so " +
                 "/dev/vcam/libvc.so /system/lib64/libvc.so /data/libvc.so /data/adb/vcamgd/libvc.so; do " +
                 "if [ -f \$lib ]; then " +
                 "echo TRY=\$lib >>/data/local/tmp/vcamgd/kinginject.log; " +
