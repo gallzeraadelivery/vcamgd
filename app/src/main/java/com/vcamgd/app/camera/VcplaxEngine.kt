@@ -168,10 +168,9 @@ object VcplaxEngine {
     private fun deployAndStart(context: Context, abi: String, server: String) {
         val base = File(context.filesDir, "vcam-engine/$abi").absolutePath
         val sdk = Build.VERSION.SDK_INT
-            // Labels estilo inject moderno: system_lib_file + exec no /data
-            // HyperOS: tambem libera ptrace_scope antes de subir
-            val out = RootShell.run(
-            "mkdir -p /data/local/tmp/vcamgd; " +
+        // Labels: system_lib_file + copia magisk_file em /data/adb (HyperOS)
+        val out = RootShell.run(
+            "mkdir -p /data/local/tmp/vcamgd /data/adb/vcamgd; " +
                 "echo 0 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; " +
                 "setenforce 0; " +
                 "killall vcplax 2>/dev/null; " +
@@ -186,15 +185,40 @@ object VcplaxEngine {
                 "cp /data/libvc.so /data/local/tmp/vcamgd/libvc.so; " +
                 "cp /data/libvc++.so /data/local/tmp/vcamgd/libvc++.so; " +
                 "cp /data/vcplax /data/local/tmp/vcamgd/vcplax; " +
+                "cp /data/libvc.so /data/adb/vcamgd/libvc.so; " +
+                "cp /data/libvc++.so /data/adb/vcamgd/libvc++.so; " +
+                "cp /data/vcplax /data/adb/vcamgd/vcplax; " +
                 "chmod 755 /data/local/tmp/vcamgd/libvc.so /data/local/tmp/vcamgd/libvc++.so; " +
-                "chmod 700 /data/local/tmp/vcamgd/vcplax; " +
+                "chmod 755 /data/adb/vcamgd/libvc.so /data/adb/vcamgd/libvc++.so; " +
+                "chmod 700 /data/local/tmp/vcamgd/vcplax /data/adb/vcamgd/vcplax; " +
                 "chcon u:object_r:magisk_file:s0 /data/local/tmp/vcamgd /data/local/tmp/vcamgd/* 2>/dev/null; " +
+                "chcon u:object_r:magisk_file:s0 /data/adb/vcamgd /data/adb/vcamgd/* 2>/dev/null; " +
                 "echo SDK=$sdk; " +
                 "setsid /data/vcplax $server >>/data/local/tmp/vcamgd/vcplax.log 2>&1 < /dev/null & " +
-                "sleep 0.45; pidof vcplax; ls -lZ /data/vcplax /data/libvc.so 2>&1 | head -5; echo OK",
+                "sleep 0.45; pidof vcplax; ls -lZ /data/vcplax /data/libvc.so /data/adb/vcamgd/vcplax 2>&1 | head -6; echo OK",
             timeoutSec = 14,
         )
         Log.i(TAG, "deploy: $out")
+    }
+
+    /**
+     * Reinicia o daemon a partir de /data/adb/vcamgd (contexto magisk_file),
+     * mantendo o mesmo nome de Binder.
+     */
+    fun restartFromAdbPath(context: Context) {
+        val server = prefs(context).getString(KEY_SERVER, null) ?: return
+        val out = RootShell.run(
+            "setenforce 0; " +
+                "echo 0 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; " +
+                "if [ ! -x /data/adb/vcamgd/vcplax ]; then echo NO_ADB_BIN; exit 0; fi; " +
+                "killall vcplax 2>/dev/null; " +
+                "setsid /data/adb/vcamgd/vcplax $server >>/data/local/tmp/vcamgd/vcplax.log 2>&1 < /dev/null & " +
+                "sleep 0.5; pidof vcplax; echo ADB_START",
+            timeoutSec = 10,
+        )
+        Log.i(TAG, "restartFromAdbPath: $out")
+        Thread.sleep(300)
+        binder = getService(server)
     }
 
     private fun ensureServerName(context: Context): String {

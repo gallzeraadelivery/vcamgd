@@ -77,8 +77,14 @@ object SelinuxLive {
             permissiveNote = RootShell.run(
                 "MP=\$(command -v magiskpolicy 2>/dev/null || echo /data/adb/magisk/magiskpolicy); " +
                     "\"\$MP\" --live 'permissive cameraserver' >/dev/null 2>&1; " +
+                    "\"\$MP\" --live 'permissive su' >/dev/null 2>&1; " +
+                    "\"\$MP\" --live 'permissive magisk' >/dev/null 2>&1; " +
+                    "\"\$MP\" --live 'permissive hal_camera_default' >/dev/null 2>&1; " +
+                    "\"\$MP\" --live 'permissive vendor_hal_camera_default' >/dev/null 2>&1; " +
+                    "\"\$MP\" --live 'permissive mtk_hal_camera' >/dev/null 2>&1; " +
+                    "\"\$MP\" --live 'allow cameraserver magisk_file file { open read getattr map execute execute_no_trans }' >/dev/null 2>&1; " +
                     "echo PERM_DONE",
-                timeoutSec = 6,
+                timeoutSec = 10,
             )
         }
 

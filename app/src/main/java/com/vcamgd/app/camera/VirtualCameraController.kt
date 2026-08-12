@@ -119,15 +119,23 @@ class VirtualCameraController(private val context: Context) {
         // So force-stop apps — NAO matar cameraserver (HyperOS/Android 16)
         delay(250)
         withContext(Dispatchers.IO) { NativeBridge.restartCameraApps() }
-        delay(200)
+        delay(400)
+        val stillInjected = withContext(Dispatchers.IO) {
+            if (!UniversalEngine.isLibVcInjected()) {
+                Log.w("KingVCam", "inject lost after camera apps restart — retry")
+                UniversalEngine.ensureInjected(retries = 2)
+                UniversalEngine.startPlay(playTarget)
+            }
+            UniversalEngine.isLibVcInjected()
+        }
         _status.value = VirtualCameraStatus(
             state = VirtualCameraState.ENABLED,
-            message = "Virtual ON (inject=${UniversalEngine.isLibVcInjected()}). Feche e abra a camera.",
+            message = "Virtual ON (inject=$stillInjected). Feche e abra a camera.",
             usingRealCamera = false,
             moduleInstalled = true,
             zygiskEvent = UniversalEngine.statusLine(context),
         )
-        Log.i("KingVCam", "enable OK target=$playTarget diag=${UniversalEngine.lastDiag}")
+        Log.i("KingVCam", "enable OK target=$playTarget inject=$stillInjected diag=${UniversalEngine.lastDiag}")
         return Result.success(Unit)
     }
 
