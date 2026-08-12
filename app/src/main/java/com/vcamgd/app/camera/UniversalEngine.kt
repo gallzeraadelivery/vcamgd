@@ -11,12 +11,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
+ * v0.10.12: relink soft (sem killall) — preserva inject no HyperOS.
  * v0.10.11: relink vcplax apos inject + play multi-path (video real).
  * v0.10.10: pos-inject — shadowhook primeiro, video legivel, force-stop enxuto.
  */
 object UniversalEngine {
     private const val TAG = "KingVCam-Universal"
-    private const val VCPLAX_LOG = "/data/local/tmp/vcamgd/vcplax.log"
 
     sealed class Result {
         data object Ok : Result()
@@ -142,21 +142,39 @@ object UniversalEngine {
                 }
             }
 
-            val status = VcplaxEngine.playStatus()
-            val alive = RootShell.run("pidof vcplax 2>/dev/null", timeoutSec = 3).trim().isNotEmpty()
-            val injected = isLibVcInjected()
+            var injected = isLibVcInjected()
+            // Soft re-inject se o map sumiu apos play (sem bounce)
+            if (!injected) {
+                Log.w(TAG, "inject sumiu apos play — soft re-inject")
+                CameraInjectHardener.keepWindowAlive()
+                CameraInjectHardener.runKingInject()
+                Thread.sleep(300)
+                injected = isLibVcInjected()
+                if (injected) {
+                    appContext?.let { VcplaxEngine.ensureBinderAlive(it) }
+                    code = playWithFallbacks(pathOrUrl)
+                }
+            }
+            val status2 = VcplaxEngine.playStatus()
+            val alive2 = RootShell.run("pidof vcplax 2>/dev/null", timeoutSec = 3).trim().isNotEmpty()
+            injected = isLibVcInjected()
             lastDiag = lastDiag.copy(
                 engine = "vcplax",
-                detail = "play=$code status=$status inject=$injected alive=$alive " +
+                detail = "play=$code status=$status2 inject=$injected alive=$alive2 " +
                     "hyper=${CameraInjectHardener.isHyperOsFamily()}",
             )
 
-            if (code != 0 || (alive && injected)) {
+            // HyperOS / geral: exige inject=true (evita Virtual parcial falso-positivo)
+            val ok = injected && (code != 0 || alive2)
+            if (ok) {
                 startWatchdog(pathOrUrl)
                 Result.Ok
             } else {
                 stopWatchdog()
-                Result.Failed("startPlay falhou (code=$code status=$status inject=$injected)")
+                Result.Failed(
+                    "startPlay falhou (code=$code status=$status2 inject=$injected). " +
+                        "Desligue/ligue a virtual; se persistir, veja Status (ki=/maps=).",
+                )
             }
         } catch (t: Throwable) {
             Log.e(TAG, "startPlay crash-guard", t)
@@ -249,7 +267,7 @@ object UniversalEngine {
                     return isLibVcInjected()
                 }
 
-                // 2) reinicia daemon + redeploy /dev
+                // 2) reinicia daemon + redeploy /dev (ainda SEM inject — force ok)
                 Log.w(TAG, "libvc NOT in maps — restarting vcplax attempt=${attempt + 1}")
                 val ctx = appContext
                 if (ctx != null) {
@@ -258,7 +276,7 @@ object UniversalEngine {
                             File(ctx.filesDir, "vcam-engine/${abiDir()}").absolutePath,
                         )
                     }
-                    VcplaxEngine.ensureRunning(ctx, restoreEnforcing = false)
+                    VcplaxEngine.ensureRunning(ctx, restoreEnforcing = false, forceRedeploy = true)
                     Thread.sleep(600)
                     if (isLibVcInjected()) return true
                 }
@@ -296,8 +314,8 @@ object UniversalEngine {
     }
 
     /**
-     * Apos bounce+kinginject, o vcplax antigo fica dessincronizado do PID novo.
-     * Reinicia o daemon para religar o canal de play ao libvc injetado.
+     * Apos bounce+kinginject, religa Binder ao libvc SEM matar vcplax.
+     * killall/redeploy no HyperOS derruba o map (inject=false / Virtual parcial).
      */
     private fun relinkVcplaxAfterInject() {
         val ctx = appContext ?: return
@@ -312,20 +330,29 @@ object UniversalEngine {
                 "true",
             timeoutSec = 6,
         )
-        VcplaxEngine.ensureRunning(ctx, restoreEnforcing = false)
-        Thread.sleep(500)
-        // Se o relink do vcplax sobrescreveu/perdeu o map, re-aplica kinginject
+        // Soft only — nao killall
+        if (!VcplaxEngine.ensureBinderAlive(ctx)) {
+            Log.w(TAG, "relink soft: binder morto — ensureRunning soft")
+            VcplaxEngine.ensureRunning(ctx, restoreEnforcing = false, forceRedeploy = false)
+        }
+        Thread.sleep(250)
         if (!isLibVcInjected()) {
-            Log.w(TAG, "relink perdeu inject — kinginject de novo")
+            Log.w(TAG, "relink: maps vazios — kinginject sem bounce")
             CameraInjectHardener.runKingInject()
             Thread.sleep(300)
+            VcplaxEngine.ensureBinderAlive(ctx)
         }
     }
 
     /** stop + play em varios paths (cameraserver/HyperOS e seletivo). */
     private fun playWithFallbacks(primary: String): Int {
         CameraInjectHardener.keepWindowAlive()
-        appContext?.let { VcplaxEngine.ensureRunning(it, restoreEnforcing = false) }
+        // Nunca forceRedeploy aqui — preserva libvc no cameraserver
+        appContext?.let { ctx ->
+            if (!VcplaxEngine.ensureBinderAlive(ctx)) {
+                VcplaxEngine.ensureRunning(ctx, restoreEnforcing = false, forceRedeploy = false)
+            }
+        }
         runCatching { VcplaxEngine.stopPlay() }
         Thread.sleep(200)
 
@@ -430,7 +457,13 @@ object UniversalEngine {
                         val code = VcplaxEngine.startPlay(playPath, loop = true, autoRotate = false)
                         if (code == -1) {
                             appContext?.let { ctx ->
-                                VcplaxEngine.ensureRunning(ctx, restoreEnforcing = false)
+                                if (!VcplaxEngine.ensureBinderAlive(ctx)) {
+                                    VcplaxEngine.ensureRunning(
+                                        ctx,
+                                        restoreEnforcing = false,
+                                        forceRedeploy = false,
+                                    )
+                                }
                                 VcplaxEngine.startPlay(playPath, loop = true, autoRotate = false)
                             }
                         }

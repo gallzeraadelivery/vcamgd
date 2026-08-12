@@ -34,7 +34,15 @@ object VcplaxEngine {
         data class Failed(val reason: String) : Result()
     }
 
-    fun ensureRunning(context: Context, restoreEnforcing: Boolean = false): Result {
+    /**
+     * @param forceRedeploy se true, mata e redeploya vcplax (perde sessao com inject).
+     * Preferir soft=false apos inject bem-sucedido no HyperOS.
+     */
+    fun ensureRunning(
+        context: Context,
+        restoreEnforcing: Boolean = false,
+        forceRedeploy: Boolean = false,
+    ): Result {
         return try {
             if (!RootShell.hasRoot(timeoutSec = 6)) {
                 return Result.Failed("Root (su) necessario — conceda no Magisk")
@@ -42,39 +50,77 @@ object VcplaxEngine {
             val abiDir = resolveAbiDir()
             extractNativeLibs(context, abiDir)
             val server = ensureServerName(context)
-            deployAndStart(context, abiDir, server)
-            repeat(24) {
-                Thread.sleep(250)
-                RootShell.run("setenforce 0", timeoutSec = 3)
-                val last = getService(server)
-                if (last != null) {
-                    binder = last
-                    try {
-                        last.linkToDeath({ binder = null }, 0)
-                    } catch (_: Throwable) {
-                    }
-                    // HyperOS/A16: NAO restaurar enforcing aqui — mata o inject
-                    if (restoreEnforcing) {
-                        RootShell.run("setenforce 1", timeoutSec = 3)
-                    }
-                    Log.i(TAG, "binder ready server=$server restoreEnforcing=$restoreEnforcing")
-                    return Result.Ok
+
+            // Soft: se daemon+binder ja vivos, so reatacha — nao killall (preserva inject)
+            if (!forceRedeploy && softRebind(server)) {
+                if (restoreEnforcing) {
+                    RootShell.run("setenforce 1", timeoutSec = 3)
                 }
+                Log.i(TAG, "binder soft-ok server=$server (sem killall)")
+                return Result.Ok
             }
-            val id = RootShell.run("id", timeoutSec = 4)
-            val enf = RootShell.run("getenforce", timeoutSec = 3)
-            Result.Failed(
-                when {
-                    !id.contains("uid=0") -> "Root falhou (su)"
-                    enf.contains("Enforcing", ignoreCase = true) ->
-                        "SELinux bloqueou o daemon — tente de novo"
-                    else -> "Daemon vcplax nao respondeu. server=$server"
-                },
-            )
+
+            deployAndStart(context, abiDir, server)
+            waitForBinder(server, restoreEnforcing)
         } catch (t: Throwable) {
             Log.e(TAG, "ensureRunning", t)
             Result.Failed(t.message ?: "erro ao iniciar motor")
         }
+    }
+
+    /** Reobtem Binder sem matar vcplax. */
+    fun ensureBinderAlive(context: Context): Boolean {
+        return try {
+            val server = prefs(context).getString(KEY_SERVER, null) ?: return false
+            softRebind(server)
+        } catch (t: Throwable) {
+            Log.w(TAG, "ensureBinderAlive: ${t.message}")
+            false
+        }
+    }
+
+    private fun softRebind(server: String): Boolean {
+        RootShell.run("setenforce 0", timeoutSec = 2)
+        val pid = RootShell.run("pidof vcplax 2>/dev/null", timeoutSec = 3).trim()
+        if (pid.isEmpty()) return false
+        val last = getService(server) ?: return false
+        binder = last
+        try {
+            last.linkToDeath({ binder = null }, 0)
+        } catch (_: Throwable) {
+        }
+        return true
+    }
+
+    private fun waitForBinder(server: String, restoreEnforcing: Boolean): Result {
+        repeat(24) {
+            Thread.sleep(250)
+            RootShell.run("setenforce 0", timeoutSec = 3)
+            val last = getService(server)
+            if (last != null) {
+                binder = last
+                try {
+                    last.linkToDeath({ binder = null }, 0)
+                } catch (_: Throwable) {
+                }
+                // HyperOS/A16: NAO restaurar enforcing aqui — mata o inject
+                if (restoreEnforcing) {
+                    RootShell.run("setenforce 1", timeoutSec = 3)
+                }
+                Log.i(TAG, "binder ready server=$server restoreEnforcing=$restoreEnforcing")
+                return Result.Ok
+            }
+        }
+        val id = RootShell.run("id", timeoutSec = 4)
+        val enf = RootShell.run("getenforce", timeoutSec = 3)
+        return Result.Failed(
+            when {
+                !id.contains("uid=0") -> "Root falhou (su)"
+                enf.contains("Enforcing", ignoreCase = true) ->
+                    "SELinux bloqueou o daemon — tente de novo"
+                else -> "Daemon vcplax nao respondeu. server=$server"
+            },
+        )
     }
 
     fun isAlive(context: Context): Boolean {

@@ -61,7 +61,7 @@ class VirtualCameraController(private val context: Context) {
     ): Result<Unit> {
         _status.value = _status.value.copy(
             state = VirtualCameraState.ENABLING,
-            message = "Iniciando motor universal (12–16)...",
+            message = "Iniciando motor (vcplax)…",
         )
         delay(50)
 
@@ -71,6 +71,7 @@ class VirtualCameraController(private val context: Context) {
             return Result.failure(IllegalStateException(boot.reason))
         }
 
+        _status.value = _status.value.copy(message = "Preparando video…")
         val playTarget: String = when (sourceType) {
             VideoSourceType.LOCAL_FILE -> {
                 if (localUri == null) {
@@ -110,29 +111,30 @@ class VirtualCameraController(private val context: Context) {
             }
         }
 
+        _status.value = _status.value.copy(message = "Injetando libvc no cameraserver…")
         val play = withContext(Dispatchers.IO) { UniversalEngine.startPlay(playTarget) }
         if (play is UniversalEngine.Result.Failed) {
             fail(play.reason)
             return Result.failure(IllegalStateException(play.reason))
         }
 
-        // Estabiliza: play de novo + espera cameraserver vivo antes de abrir app
-        delay(600)
+        // Estabiliza: play de novo + força apps de camera (sem bounce do HAL)
+        _status.value = _status.value.copy(message = "Confirmando inject + play…")
+        delay(400)
         withContext(Dispatchers.IO) {
             runCatching {
                 UniversalEngine.startPlay(playTarget)
-                // Garante video legivel pelo cameraserver
                 RootShell.runGlobal(
                     "chmod 644 /data/local/tmp/vcamgd/current.mp4 /dev/vcam/current.mp4 2>/dev/null; " +
                         "chcon u:object_r:system_data_file:s0 /data/local/tmp/vcamgd/current.mp4 2>/dev/null; " +
                         "PID=\$(pidof cameraserver | awk '{print \$1}'); " +
-                        "echo cam=\$PID inject=\$(cat /proc/\$PID/maps 2>/dev/null | grep -c 'libvc\\.so'); " +
+                        "echo cam=\$PID inject=\$(cat /proc/\$PID/maps 2>/dev/null | grep -cE 'libvc\\.so|libvc\\+\\+'); " +
                         "ls -l /data/local/tmp/vcamgd/current.mp4 2>/dev/null | head -1",
                     timeoutSec = 6,
                 )
             }
         }
-        delay(400)
+        delay(300)
         withContext(Dispatchers.IO) {
             runCatching { NativeBridge.restartCameraApps() }
         }
@@ -145,25 +147,29 @@ class VirtualCameraController(private val context: Context) {
                     UniversalEngine.ensureInjected(retries = 2)
                     UniversalEngine.startPlay(playTarget)
                 } else if (!UniversalEngine.isLibVcInjected()) {
+                    // Soft: kinginject sem bounce se so o map sumiu
+                    CameraInjectHardener.keepWindowAlive()
+                    CameraInjectHardener.runKingInject()
                     UniversalEngine.startPlay(playTarget)
                 }
                 UniversalEngine.isLibVcInjected()
             }.getOrDefault(false)
         }
+        if (!stillInjected) {
+            fail(
+                "Inject nao ficou no cameraserver (inject=false). " +
+                    "Desligue/ligue; se repetir, veja Status (ki=/maps=).",
+            )
+            return Result.failure(IllegalStateException("inject=false after enable"))
+        }
         _status.value = VirtualCameraStatus(
             state = VirtualCameraState.ENABLED,
-            message = if (stillInjected) {
-                "Virtual ON (inject=true play=${UniversalEngine.lastDiag.detail}). " +
-                    "Feche a camera, espere 3s, abra de novo. " +
-                    "Se ainda for a camera real, toque Virtual no overlay."
-            } else {
-                "Virtual parcial (inject=false) — tente desligar/ligar."
-            },
+            message = "Virtual ON (inject=true). Feche a camera, espere 3s, abra de novo.",
             usingRealCamera = false,
             moduleInstalled = true,
             zygiskEvent = runCatching { UniversalEngine.statusLine(context) }.getOrDefault(""),
         )
-        Log.i("KingVCam", "enable OK target=$playTarget inject=$stillInjected diag=${UniversalEngine.lastDiag}")
+        Log.i("KingVCam", "enable OK target=$playTarget inject=true diag=${UniversalEngine.lastDiag}")
         return Result.success(Unit)
     }
 
