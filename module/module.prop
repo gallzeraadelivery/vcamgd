@@ -1,6 +1,6 @@
 id=vcamgd
 name=KingVCam Engine
-version=v0.9.1
-versionCode=14
+version=v0.9.4
+versionCode=15
 author=vcamgd
-description=KingEngine soft inject. Control via su+control.json (fix socket SELinux). Android 12-16.
+description=KingEngine soft/hard inject. Always inject DEX; control.json gates feed. Android 12-16.

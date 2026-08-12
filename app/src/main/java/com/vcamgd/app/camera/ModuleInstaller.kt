@@ -20,7 +20,7 @@ object ModuleInstaller {
     private const val MODULE_PROP = "$MODULE_DIR/module.prop"
     private const val MODULE_UPDATE_PROP = "$MODULE_UPDATE_DIR/module.prop"
     private const val ZYGISK_SO = "$MODULE_DIR/zygisk/arm64-v8a.so"
-    private const val EMBEDDED_VERSION_CODE = 14
+    private const val EMBEDDED_VERSION_CODE = 15
 
     sealed class Result {
         data object AlreadyInstalled : Result()
@@ -88,14 +88,14 @@ object ModuleInstaller {
                 return Result.InstalledNeedsReboot
             }
 
-            // Copia in-place para modules/ com versao ok: Zygisk so carrega no boot,
-            // mas se ja existia o modulo, um reboot ja foi pedido antes — nao bloquear
-            // o app para sempre. Pedimos reboot so na primeira instalacao.
+            // Copia in-place / magisk CLI ok
             if (liveAfter >= EMBEDDED_VERSION_CODE && fileExistsAsRoot(ZYGISK_SO)) {
-                return if (hadLiveBefore) {
-                    Result.AlreadyInstalled
-                } else {
+                // Primeira instalacao OU upgrade de versionCode → precisa reboot do Zygisk
+                val needsReboot = !hadLiveBefore || liveVersion < EMBEDDED_VERSION_CODE
+                return if (needsReboot) {
                     Result.InstalledNeedsReboot
+                } else {
+                    Result.AlreadyInstalled
                 }
             }
 

@@ -101,7 +101,10 @@ class VirtualCameraController(private val context: Context) {
             return Result.failure(IllegalStateException(play.reason))
         }
 
+        // Garante control.json virtual gravado antes do force-stop (specialize le na hora)
+        delay(400)
         withContext(Dispatchers.IO) { NativeBridge.restartCameraApps() }
+        delay(200)
         _status.value = VirtualCameraStatus(
             state = VirtualCameraState.ENABLED,
             message = "Virtual ON (KingEngine). Reabra a camera.",

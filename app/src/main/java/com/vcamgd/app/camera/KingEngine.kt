@@ -60,7 +60,7 @@ object KingEngine {
                         diag.lineSequence().firstOrNull().orEmpty(),
                 )
             }
-            writeControl(enabled = false, virtual = false, mode = "real", source = "", uri = "", url = "")
+            // Nao forcar mode=real aqui — apagaria virtual se o usuario esta ativando.
             Log.i(TAG, "kingvd ready pid=${RootShell.run("pidof kingvd")}")
             Result.Ok
         } catch (t: Throwable) {

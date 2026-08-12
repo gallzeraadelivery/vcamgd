@@ -24,10 +24,9 @@ import top.canyie.pine.Pine;
 import top.canyie.pine.callback.MethodHook;
 
 /**
- * Injeção alinhada ao padrão OVCAM (observado no APK de referência):
- * - Por padrão NÃO altera os argumentos de createCaptureSession (evita 03400001 na Moto).
- * - Alimenta o preview com MediaPlayer no afterCall, depois que a sessão já abriu.
- * - Modo "hard" opcional (control.inject=hard) para apps que precisam bloquear o HAL.
+ * Injecao Camera2/Camera1 via Pine.
+ * - hard (padrao): Surfaces do HAL viram dummy; preview recebe MediaPlayer (substitui).
+ * - soft: nao mexe no HAL; joga video por cima (pode perder para a camera real).
  */
 public final class HookEntry {
     private static final String TAG = "KingVCam-KingHook";
@@ -91,13 +90,13 @@ public final class HookEntry {
         }
     }
 
-    /** soft (default, OVCAM-like) | hard (dummy HAL surfaces) */
+    /** soft | hard — default hard: HAL nao escreve no preview (substitui de verdade). */
     private static String injectMode() {
         JSONObject json = readControl();
-        if (json == null) return "soft";
-        String m = json.optString("inject", "soft").trim().toLowerCase(Locale.US);
-        if ("hard".equals(m)) return "hard";
-        return "soft";
+        if (json == null) return "hard";
+        String m = json.optString("inject", "hard").trim().toLowerCase(Locale.US);
+        if ("soft".equals(m)) return "soft";
+        return "hard";
     }
 
     private static int hookCamera2() {
@@ -222,6 +221,15 @@ public final class HookEntry {
         if (surfaces.isEmpty()) return;
 
         lastPreview = pickPreviewSurfaces(surfaces);
+        // Em hard, alimenta todas as Surfaces validas (primeira ganha o player;
+        // pick garante preview tipico no inicio da lista).
+        if ("hard".equals(injectMode()) && !surfaces.isEmpty()) {
+            ArrayList<Surface> all = new ArrayList<>();
+            for (Surface s : surfaces) {
+                if (s != null && s.isValid()) all.add(s);
+            }
+            if (!all.isEmpty()) lastPreview = all;
+        }
 
         if (!shouldInject()) return;
         if (!"hard".equals(injectMode())) {

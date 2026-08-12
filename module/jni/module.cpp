@@ -297,27 +297,26 @@ static void companion_handler(int client) {
         chmod(kPinePath, 0755);
     }
 
-    // CRITICAL: no dex => no Pine hooks => stock camera opens normally
-    if (!control_wants_virtual()) {
-        LOGI("companion skip: virtual mode off");
-        write_status("passthrough_no_inject");
-        uint32_t zero = 0;
-        write(client, &zero, sizeof(zero));
-        return;
-    }
-
+    // SEMPRE envia hook.dex — o HookEntry decide em runtime via control.json.
+    // Se so injetar com virtual=on, apps abertos antes ficam sem hooks para sempre
+    // (ate force-stop), e vários processos escapam da lista de restart.
     std::string dex;
     if (!read_file(kModuleDex, dex)) {
         LOGE("companion missing hook.dex");
         uint32_t zero = 0;
         write(client, &zero, sizeof(zero));
+        write_status("companion_missing_dex");
         return;
     }
     uint32_t size = static_cast<uint32_t>(dex.size());
     write(client, &size, sizeof(size));
     write(client, dex.data(), size);
-    write_status("companion_sent_dex");
-    LOGI("companion sent dex bytes=%u", size);
+    if (control_wants_virtual()) {
+        write_status("companion_sent_dex_virtual");
+    } else {
+        write_status("companion_sent_dex_standby");
+    }
+    LOGI("companion sent dex bytes=%u virtual=%d", size, control_wants_virtual() ? 1 : 0);
 }
 
 REGISTER_ZYGISK_MODULE(VCamModule)

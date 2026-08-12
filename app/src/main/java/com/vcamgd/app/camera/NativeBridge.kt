@@ -50,6 +50,18 @@ object NativeBridge {
         "com.motorola.actions",
         "com.sonyericsson.android.camera",
         "com.transsion.camera",
+        // Apps que usam camera com frequencia
+        "com.whatsapp",
+        "com.whatsapp.w4b",
+        "com.instagram.android",
+        "com.facebook.orca",
+        "com.facebook.mlite",
+        "org.telegram.messenger",
+        "com.discord",
+        "com.snapchat.android",
+        "com.google.android.apps.messaging",
+        "com.android.chrome",
+        "com.android.systemui",
     )
 
     fun isModulePresent(): Boolean =
@@ -102,7 +114,7 @@ object NativeBridge {
             uri = VIDEO_TMP,
             url = "",
         )
-        if (ok) restartCameraApps()
+        // Restart so no VirtualCameraController — evita double-kill cedo demais
         return ok
     }
 
@@ -121,7 +133,6 @@ object NativeBridge {
             uri = "",
             url = normalized,
         )
-        if (ok) restartCameraApps()
         return ok
     }
 
@@ -236,8 +247,14 @@ object NativeBridge {
                 "mkdir -p '$TMP_DIR' '$ADB_DIR'; " +
                     "cp '${cache.absolutePath}' '$VIDEO_TMP'; " +
                     "cp '${cache.absolutePath}' '$VIDEO_ADB'; " +
-                    "chmod 777 '$TMP_DIR'; chmod 666 '$VIDEO_TMP' '$VIDEO_ADB'; " +
-                    "ls -l '$VIDEO_TMP'; echo OK"
+                    "chmod 777 '$TMP_DIR' '$ADB_DIR'; " +
+                    "chmod 666 '$VIDEO_TMP' '$VIDEO_ADB'; " +
+                    "chown root:root '$VIDEO_TMP' '$VIDEO_ADB' 2>/dev/null; " +
+                    // SELinux: apps de camera precisam ler o mp4
+                    "chcon u:object_r:magisk_file:s0 '$TMP_DIR' '$VIDEO_TMP' 2>/dev/null; " +
+                    "chcon u:object_r:system_data_file:s0 '$VIDEO_TMP' 2>/dev/null; " +
+                    "restorecon -F '$TMP_DIR' '$VIDEO_TMP' 2>/dev/null; " +
+                    "ls -lZ '$VIDEO_TMP'; echo OK"
             val ok = shellSu(script).contains("OK")
             Log.i(TAG, "stageLocalVideo size=${cache.length()} ok=$ok")
             ok
