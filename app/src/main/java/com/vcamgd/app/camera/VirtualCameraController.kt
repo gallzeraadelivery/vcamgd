@@ -116,16 +116,35 @@ class VirtualCameraController(private val context: Context) {
             return Result.failure(IllegalStateException(play.reason))
         }
 
-        // So force-stop apps — NAO matar cameraserver (HyperOS/Android 16)
-        delay(250)
+        // Estabiliza: play de novo + espera cameraserver vivo antes de abrir app
+        delay(600)
+        withContext(Dispatchers.IO) {
+            runCatching {
+                UniversalEngine.startPlay(playTarget)
+                // Garante video legivel pelo cameraserver
+                RootShell.runGlobal(
+                    "chmod 644 /data/local/tmp/vcamgd/current.mp4 /dev/vcam/current.mp4 2>/dev/null; " +
+                        "chcon u:object_r:system_data_file:s0 /data/local/tmp/vcamgd/current.mp4 2>/dev/null; " +
+                        "PID=\$(pidof cameraserver | awk '{print \$1}'); " +
+                        "echo cam=\$PID inject=\$(cat /proc/\$PID/maps 2>/dev/null | grep -c 'libvc\\.so'); " +
+                        "ls -l /data/local/tmp/vcamgd/current.mp4 2>/dev/null | head -1",
+                    timeoutSec = 6,
+                )
+            }
+        }
+        delay(400)
         withContext(Dispatchers.IO) {
             runCatching { NativeBridge.restartCameraApps() }
         }
-        delay(300)
+        delay(500)
         val stillInjected = withContext(Dispatchers.IO) {
             runCatching {
-                if (!UniversalEngine.isLibVcInjected()) {
-                    Log.w("KingVCam", "inject lost after camera apps restart — replay only")
+                val alive = RootShell.run("pidof cameraserver 2>/dev/null", timeoutSec = 3).trim()
+                if (alive.isEmpty()) {
+                    Log.w("KingVCam", "cameraserver morreu apos play — recuperando")
+                    UniversalEngine.ensureInjected(retries = 2)
+                    UniversalEngine.startPlay(playTarget)
+                } else if (!UniversalEngine.isLibVcInjected()) {
                     UniversalEngine.startPlay(playTarget)
                 }
                 UniversalEngine.isLibVcInjected()
@@ -133,7 +152,12 @@ class VirtualCameraController(private val context: Context) {
         }
         _status.value = VirtualCameraStatus(
             state = VirtualCameraState.ENABLED,
-            message = "Virtual ON (inject=$stillInjected). Feche e abra a camera.",
+            message = if (stillInjected) {
+                "Virtual ON (inject=true). Feche a camera do sistema e abra de novo. " +
+                    "Se der erro de conexao, espere 5s e abra outra vez."
+            } else {
+                "Virtual parcial (inject=false) — tente desligar/ligar."
+            },
             usingRealCamera = false,
             moduleInstalled = true,
             zygiskEvent = runCatching { UniversalEngine.statusLine(context) }.getOrDefault(""),
@@ -192,21 +216,27 @@ class VirtualCameraController(private val context: Context) {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 cache.outputStream().use { output -> input.copyTo(output) }
             } ?: return null
+            if (cache.length() < 1024) {
+                Log.e("KingVCam", "stageLocalToPath: arquivo muito pequeno ${cache.length()}")
+                return null
+            }
             val dest = "/data/local/tmp/vcamgd/current.mp4"
-            val out = RootShell.run(
-                "mkdir -p /data/local/tmp/vcamgd /data/adb/vcamgd; " +
+            val out = RootShell.runGlobal(
+                "mkdir -p /data/local/tmp/vcamgd /data/adb/vcamgd /dev/vcam; " +
                     "cp '${cache.absolutePath}' '$dest'; " +
-                    "cp '$dest' /data/adb/vcamgd/current.mp4 2>/dev/null; " +
-                    // Xiaomi/HyperOS: copia tambem em /data e /sdcard legivel
-                    "cp '$dest' /data/local/tmp/current.mp4 2>/dev/null; " +
-                    "cp '$dest' /sdcard/vcam_input.mp4 2>/dev/null; " +
-                    "chmod 777 /data/local/tmp/vcamgd /data/local/tmp; " +
-                    "chmod 666 '$dest' /data/local/tmp/current.mp4 /sdcard/vcam_input.mp4 2>/dev/null; " +
-                    "chcon u:object_r:magisk_file:s0 '$dest' 2>/dev/null; " +
-                    "chcon u:object_r:system_data_file:s0 '$dest' 2>/dev/null; " +
-                    "ls -lZ '$dest'; echo OK",
-                timeoutSec = 10,
+                    "cp '$dest' /data/adb/vcamgd/current.mp4; " +
+                    "cp '$dest' /dev/vcam/current.mp4; " +
+                    "cp '$dest' /data/local/tmp/current.mp4; " +
+                    "chmod 755 /data/local/tmp /data/local/tmp/vcamgd /dev/vcam; " +
+                    "chmod 644 '$dest' /dev/vcam/current.mp4 /data/local/tmp/current.mp4 /data/adb/vcamgd/current.mp4; " +
+                    "chcon u:object_r:system_data_file:s0 '$dest' /data/local/tmp/current.mp4 2>/dev/null; " +
+                    "chcon u:object_r:magisk_file:s0 /data/adb/vcamgd/current.mp4 2>/dev/null; " +
+                    "chcon u:object_r:system_lib_file:s0 /dev/vcam/current.mp4 2>/dev/null; " +
+                    "SZ=\$(wc -c < '$dest'); echo SIZE=\$SZ; ls -lZ '$dest'; " +
+                    "if [ \"\$SZ\" -gt 1000 ]; then echo OK; fi",
+                timeoutSec = 14,
             )
+            Log.i("KingVCam", "stageLocalToPath: ${out.take(240)}")
             if (out.contains("OK")) dest else null
         } catch (t: Throwable) {
             Log.e("KingVCam", "stageLocalToPath", t)

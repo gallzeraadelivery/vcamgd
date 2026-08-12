@@ -198,21 +198,19 @@ object CameraInjectHardener {
                 "if [ -z \"\$PID\" ]; then echo NO_CAM; exit 0; fi; " +
                 ": > /data/local/tmp/vcamgd/kinginject.log; " +
                 "BEST_RC=99; " +
-                "for lib in /dev/vcam/libvc.so /system/lib64/libvc.so /data/libvc.so /data/adb/vcamgd/libvc.so; do " +
+                // Ordem critica: shadowhook (libvc++) ANTES de libvc
+                "for lib in /dev/vcam/libvc++.so /data/libvc++.so /data/adb/vcamgd/libvc++.so " +
+                "/dev/vcam/libvc.so /system/lib64/libvc.so /data/libvc.so /data/adb/vcamgd/libvc.so; do " +
                 "if [ -f \$lib ]; then " +
                 "echo TRY=\$lib >>/data/local/tmp/vcamgd/kinginject.log; " +
                 "\"\$KI\" --pid \$PID --lib \$lib >>/data/local/tmp/vcamgd/kinginject.log 2>&1; " +
                 "RC=\$?; echo RC=\$RC lib=\$lib >>/data/local/tmp/vcamgd/kinginject.log; " +
-                "if [ \$RC -lt \$BEST_RC ]; then BEST_RC=\$RC; fi; " +
-                "if [ \$RC -eq 0 ]; then break; fi; " +
+                "case \$lib in *libvc.so) if [ \$RC -lt \$BEST_RC ]; then BEST_RC=\$RC; fi ;; esac; " +
                 "fi; done; " +
-                // sem kill -STOP: no A16 com CFI atrapalha o attach
-                // Nao usar 'shadow' sozinho — casa com [anon:cfi shadow]
                 "MAPS=\$(cat /proc/\$PID/maps 2>/dev/null | grep -E 'libvc\\.so|libvc\\+\\+|/dev/vcam/|libshadowhook\\.so' | head -3 | tr '\\n' ','); " +
                 "echo KI_RC=\$BEST_RC; echo MAPS=\${MAPS:-empty}; " +
-                "if [ -f /dev/vcam/libvc++.so ]; then \"\$KI\" --pid \$PID --lib /dev/vcam/libvc++.so >>/data/local/tmp/vcamgd/kinginject.log 2>&1; fi; " +
                 "echo KING_DONE",
-            timeoutSec = 25,
+            timeoutSec = 30,
         )
         Log.i(TAG, "runKingInject: ${out.take(500)}")
         return out

@@ -11,8 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
+ * v0.10.10: pos-inject — shadowhook primeiro, video legivel, force-stop enxuto.
  * v0.10.9: fix load-bias libdl (r--p+r-xp) — PC dlopen errado no A16.
- * v0.10.8: kinginject stack-path (sem mmap/BTI) + maps sem falso cfi shadow.
  */
 object UniversalEngine {
     private const val TAG = "KingVCam-Universal"
@@ -132,16 +132,29 @@ object UniversalEngine {
             var code = VcplaxEngine.startPlay(pathOrUrl, loop = true, autoRotate = false)
             Log.i(TAG, "startPlay#1=$code path=$pathOrUrl")
             if (code == 0 || code == -1) {
-                Thread.sleep(300)
+                Thread.sleep(400)
                 CameraInjectHardener.keepWindowAlive()
-                // Reatacha binder se caiu
                 appContext?.let { VcplaxEngine.ensureRunning(it, restoreEnforcing = false) }
                 code = VcplaxEngine.startPlay(pathOrUrl, loop = true, autoRotate = false)
                 Log.i(TAG, "startPlay#2=$code")
             }
-
-            Thread.sleep(300)
+            // Terceiro play apos settle — HyperOS as vezes ignora o primeiro
+            Thread.sleep(500)
             CameraInjectHardener.keepWindowAlive()
+            val code3 = VcplaxEngine.startPlay(pathOrUrl, loop = true, autoRotate = false)
+            if (code3 != 0) code = code3
+            Log.i(TAG, "startPlay#3=$code3")
+
+            // Confirma cameraserver ainda vivo (libvc quebrado as vezes mata o processo)
+            val camPid = RootShell.runGlobal("pidof cameraserver 2>/dev/null", timeoutSec = 3).trim()
+            if (camPid.isEmpty() || camPid.contains("NO_") || !camPid.any { it.isDigit() }) {
+                Log.w(TAG, "cameraserver morreu apos inject/play — re-inject")
+                if (ensureInjected(retries = 2)) {
+                    Thread.sleep(400)
+                    code = VcplaxEngine.startPlay(pathOrUrl, loop = true, autoRotate = false)
+                }
+            }
+
             val alive = RootShell.run("pidof vcplax 2>/dev/null", timeoutSec = 3).trim().isNotEmpty()
             val injected = isLibVcInjected()
             lastDiag = lastDiag.copy(
@@ -169,6 +182,15 @@ object UniversalEngine {
         virtualSession = false
         stopWatchdog()
         runCatching { VcplaxEngine.stopPlay() }
+        // HyperOS: apos virtual, reinicia cameraserver limpo para camera real voltar
+        if (CameraInjectHardener.isHyperOsFamily() || Build.VERSION.SDK_INT >= 35) {
+            RootShell.runGlobal(
+                "killall -9 cameraserver 2>/dev/null; " +
+                    "for i in 1 2 3 4 5 6 7 8 9 10 11 12; do " +
+                    "pidof cameraserver >/dev/null && exit 0; sleep 0.25; done; true",
+                timeoutSec = 8,
+            )
+        }
         return Result.Ok
     }
 

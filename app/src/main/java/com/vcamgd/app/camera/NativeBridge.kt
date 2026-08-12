@@ -227,17 +227,30 @@ object NativeBridge {
     }
 
     /**
-     * Force-stop apps de camera. No HyperOS/Android 16 NAO mata cameraserver aqui —
-     * isso derruba o inject do vcplax (camera volta real).
+     * Force-stop so apps de camera do OEM.
+     * HyperOS: lista enxuta — force-stop em massa derruba a sessao Camera2
+     * ("Nao e possivel conectar-se a camera").
      */
     fun restartCameraApps() {
-        val cmds = CAMERA_PACKAGES.joinToString("; ") { "am force-stop $it 2>/dev/null" }
-        val script =
-            "$cmds; " +
-                "for p in \$(dumpsys media.camera 2>/dev/null | grep -oE 'com\\.[a-zA-Z0-9_.]+' | sort -u); do " +
-                "am force-stop \"\$p\" 2>/dev/null; done; " +
-                "echo OK"
-        val out = shellSu(script)
+        val pkgs = if (
+            android.os.Build.MANUFACTURER.contains("xiaomi", true) ||
+            android.os.Build.BRAND.contains("redmi", true) ||
+            android.os.Build.BRAND.contains("poco", true) ||
+            android.os.Build.BRAND.contains("xiaomi", true)
+        ) {
+            listOf(
+                "com.android.camera",
+                "com.android.camera2",
+                "com.miui.camera",
+                "com.xiaomi.camera",
+                "com.mlab.cam",
+                "com.android.mmc",
+            )
+        } else {
+            CAMERA_PACKAGES
+        }
+        val cmds = pkgs.joinToString("; ") { "am force-stop $it 2>/dev/null" }
+        val out = shellSu("$cmds; echo OK")
         Log.i(TAG, "restartCameraApps: ${out.take(200)}")
     }
 
