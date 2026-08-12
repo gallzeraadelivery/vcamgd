@@ -73,8 +73,9 @@ object KingVCamLog {
                 "PID=\$(pidof cameraserver 2>/dev/null | awk '{print \$1}'); echo cam=\$PID; " +
                 "echo vcplax=\$(pidof vcplax 2>/dev/null | tr ' ' ','); " +
                 "if [ -n \"\$PID\" ]; then " +
-                "MAPS=\$(cat /proc/\$PID/maps 2>/dev/null | grep -E 'libvc\\.so|libvc\\+\\+|libshadowhook\\.so|/dev/vcam/' | head -6 | tr '\\n' '|'); " +
+                "MAPS=\$(cat /proc/\$PID/maps 2>/dev/null | grep -E 'libvc\\.so' | grep -v 'libvc++' | head -6 | tr '\\n' '|'); " +
                 "echo maps=\${MAPS:-EMPTY}; " +
+                "echo deleted=\$(echo \"\$MAPS\" | grep -c '(deleted)'); " +
                 "echo sectx=\$(cat /proc/\$PID/attr/current 2>/dev/null); " +
                 "else echo maps=NO_CAM; fi; " +
                 "for f in /dev/vcam/current.mp4 /data/local/tmp/vcamgd/current.mp4 /data/adb/vcamgd/current.mp4 /data/local/tmp/current.mp4; do " +
@@ -126,9 +127,12 @@ object KingVCamLog {
             !hasVideo || missingVideo -> h.add("arquivo de video ausente/pequeno — stage falhou; selecione o video de novo")
             vcplaxDead -> h.add("vcplax morto — binder play nao alimenta o libvc mesmo com inject=true")
             else -> {
-                h.add("inject+video+vcplax aparentam OK — provavel: (1) app de camera abriu antes do play estabilizar; (2) libvc no maps mas hook nao substituiu o stream; (3) feche camera 3s e reabra")
-                h.add("se HyperOS: force-stop so da camera Xiaomi e reabra; evite matar cameraserver apos inject")
+                h.add("inject+video+vcplax aparentam OK — (1) feche camera 3s e reabra; (2) se maps tem (deleted), libs foram sobrescritas — reinstale 0.10.14+; (3) play deve usar /dev/vcam/current.mp4")
+                h.add("HyperOS: nao force-stop apos inject; SELinux deve ficar Permissive na sessao")
             }
+        }
+        if (snap.contains("(deleted)")) {
+            h.add("CRITICO: libvc.so (deleted) no maps — arquivo sumiu apos dlopen; preview costuma falhar. Inject de /dev/vcam sem overwrite.")
         }
         if (snap.contains("Enforcing", ignoreCase = true)) {
             h.add("SELinux Enforcing — janela de inject pode ter fechado")

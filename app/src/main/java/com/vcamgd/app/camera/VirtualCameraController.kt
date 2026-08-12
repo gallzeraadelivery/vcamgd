@@ -124,44 +124,53 @@ class VirtualCameraController(private val context: Context) {
             return Result.failure(IllegalStateException(play.reason))
         }
 
-        // Estabiliza: play de novo + força apps de camera (sem bounce do HAL)
+        // Estabiliza play; HyperOS: NAO force-stop (derruba cameraserver / perde inject)
         _status.value = _status.value.copy(message = "Confirmando inject + play…")
         delay(400)
         withContext(Dispatchers.IO) {
             runCatching {
                 UniversalEngine.startPlay(playTarget)
                 RootShell.runGlobal(
-                    "chmod 644 /data/local/tmp/vcamgd/current.mp4 /dev/vcam/current.mp4 2>/dev/null; " +
+                    "chmod 644 /dev/vcam/current.mp4 /data/local/tmp/vcamgd/current.mp4 2>/dev/null; " +
                         "chcon u:object_r:system_data_file:s0 /data/local/tmp/vcamgd/current.mp4 2>/dev/null; " +
                         "PID=\$(pidof cameraserver | awk '{print \$1}'); " +
-                        "echo cam=\$PID inject=\$(cat /proc/\$PID/maps 2>/dev/null | grep -cE 'libvc\\.so|libvc\\+\\+'); " +
-                        "ls -l /data/local/tmp/vcamgd/current.mp4 2>/dev/null | head -1",
+                        "echo cam=\$PID; " +
+                        "echo maps=\$(cat /proc/\$PID/maps 2>/dev/null | grep 'libvc\\.so' | grep -v 'libvc++' | head -2 | tr '\\n' '|'); " +
+                        "ls -l /dev/vcam/current.mp4 2>/dev/null | head -1",
                     timeoutSec = 6,
                 )
             }
         }
         delay(300)
-        withContext(Dispatchers.IO) {
-            runCatching { NativeBridge.restartCameraApps() }
-            KingVCamLog.i("enable", "force-stop apps de camera (HyperOS enxuto)")
+        val hyper = CameraInjectHardener.isHyperOsFamily()
+        if (!hyper) {
+            withContext(Dispatchers.IO) {
+                runCatching { NativeBridge.restartCameraApps() }
+            }
+            KingVCamLog.i("enable", "force-stop apps de camera")
+            delay(500)
+        } else {
+            KingVCamLog.i("enable", "HyperOS: sem force-stop (preserva cameraserver/inject)")
+            delay(200)
         }
-        delay(500)
         val stillInjected = withContext(Dispatchers.IO) {
             runCatching {
+                CameraInjectHardener.keepWindowAlive()
                 val alive = RootShell.run("pidof cameraserver 2>/dev/null", timeoutSec = 3).trim()
                 if (alive.isEmpty()) {
-                    Log.w("KingVCam", "cameraserver morreu apos play — recuperando")
-                    KingVCamLog.w("cam", "morreu apos force-stop — recuperando")
+                    Log.w("KingVCam", "cameraserver morto — recuperando")
+                    KingVCamLog.w("cam", "morto apos play — recuperando")
+                    CameraInjectHardener.freezeLibDeploy = false
                     UniversalEngine.ensureInjected(retries = 2)
+                    CameraInjectHardener.freezeLibDeploy = true
                     UniversalEngine.startPlay(playTarget)
-                } else if (!UniversalEngine.isLibVcInjected()) {
-                    KingVCamLog.w("inject", "sumiu apos force-stop — soft kinginject")
-                    // Soft: kinginject sem bounce se so o map sumiu
+                } else if (!UniversalEngine.isLibVcInjected() || UniversalEngine.mapsHasDeletedLibvc()) {
+                    KingVCamLog.w("inject", "sumiu ou (deleted) — soft kinginject")
                     CameraInjectHardener.keepWindowAlive()
                     CameraInjectHardener.runKingInject()
                     UniversalEngine.startPlay(playTarget)
                 }
-                UniversalEngine.isLibVcInjected()
+                UniversalEngine.isLibVcInjected() && !UniversalEngine.mapsHasDeletedLibvc()
             }.getOrDefault(false)
         }
         if (!stillInjected) {
@@ -220,9 +229,9 @@ class VirtualCameraController(private val context: Context) {
 
     suspend fun switchToVirtualCamera() {
         val prefs = context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
-        val path = prefs.getString("uri", null)?.takeIf { it.startsWith("/") }
-            ?: prefs.getString("url", null)
-            ?: "/data/local/tmp/vcamgd/current.mp4"
+        val path = prefs.getString("uri", null)?.takeIf { it.startsWith("/") && it.length > 1 }
+            ?: prefs.getString("url", null)?.takeIf { it.isNotBlank() }
+            ?: "/dev/vcam/current.mp4"
         withContext(Dispatchers.IO) {
             runCatching { NativeBridge.switchToVirtual(context) }
             runCatching { UniversalEngine.startPlay(path) }
@@ -263,16 +272,17 @@ class VirtualCameraController(private val context: Context) {
             Log.i("KingVCam", "stageLocalToPath: ${out.take(240)}")
             KingVCamLog.i("video", "stage ${out.take(180)}")
             if (out.contains("OK")) {
-                // Overlay/switchVirtual precisam do path absoluto, nao content://
+                // Overlay/switchVirtual: path absoluto preferindo /dev/vcam
+                val playPath = "/dev/vcam/current.mp4"
                 context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
                     .edit()
-                    .putString("uri", dest)
+                    .putString("uri", playPath)
                     .putString("source", "local")
                     .putBoolean("enabled", true)
                     .putBoolean("virtual", true)
                     .putString("mode", "virtual")
                     .apply()
-                dest
+                playPath
             } else {
                 null
             }

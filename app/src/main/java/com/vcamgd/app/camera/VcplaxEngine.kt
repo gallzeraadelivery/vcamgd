@@ -228,45 +228,44 @@ object VcplaxEngine {
     private fun deployAndStart(context: Context, abi: String, server: String) {
         val base = File(context.filesDir, "vcam-engine/$abi").absolutePath
         val sdk = Build.VERSION.SDK_INT
-        // Mount master (su -mm): sem isso o vcplax nao ptrace o cameraserver no HyperOS
+        val freeze = CameraInjectHardener.freezeLibDeploy
+        val libPart = if (freeze) {
+            "echo FREEZE_LIBS; "
+        } else {
+            "safe_cp() { SRC=\"\$1\"; DEST=\"\$2\"; " +
+                "[ ! -f \"\$SRC\" ] && return 1; " +
+                "if [ -f \"\$DEST\" ] && cmp -s \"\$SRC\" \"\$DEST\" 2>/dev/null; then return 0; fi; " +
+                "if [ -f \"\$DEST\" ]; then cat \"\$SRC\" > \"\$DEST\"; else cp \"\$SRC\" \"\$DEST\"; fi; return 0; }; " +
+                "safe_cp '$base/libvc.so' /dev/vcam/libvc.so; " +
+                "safe_cp '$base/libshadowhook.so' /dev/vcam/libvc++.so; " +
+                "safe_cp '$base/libshadowhook.so' /dev/vcam/libshadowhook.so; " +
+                "safe_cp '$base/vcplax.so' /data/vcplax; " +
+                "safe_cp '$base/kinginject' /data/local/tmp/vcamgd/kinginject; " +
+                "safe_cp '$base/kinginject' /data/adb/vcamgd/kinginject; " +
+                "safe_cp /dev/vcam/libvc.so /data/libvc.so; " +
+                "safe_cp /dev/vcam/libvc++.so /data/libvc++.so; " +
+                "safe_cp /dev/vcam/libshadowhook.so /data/libshadowhook.so; " +
+                "safe_cp /dev/vcam/libvc.so /data/adb/vcamgd/libvc.so; " +
+                "safe_cp /dev/vcam/libvc++.so /data/adb/vcamgd/libvc++.so; " +
+                "safe_cp /data/vcplax /data/adb/vcamgd/vcplax; " +
+                "safe_cp /data/vcplax /data/local/tmp/vcamgd/vcplax; " +
+                "chmod 755 /dev/vcam /dev/vcam/libvc.so /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so; " +
+                "chmod 755 /data/libvc.so /data/libvc++.so /data/libshadowhook.so; " +
+                "chmod 700 /data/vcplax /data/local/tmp/vcamgd/kinginject /data/adb/vcamgd/kinginject 2>/dev/null; " +
+                "chcon u:object_r:system_lib_file:s0 /dev/vcam/libvc.so /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so /data/libvc.so /data/libvc++.so /data/libshadowhook.so 2>/dev/null; " +
+                "chcon u:object_r:system_file:s0 /data/vcplax 2>/dev/null; " +
+                "chcon u:object_r:magisk_file:s0 /data/adb/vcamgd /data/adb/vcamgd/* 2>/dev/null; "
+        }
         val out = RootShell.runGlobal(
-            "mkdir -p /data/local/tmp/vcamgd /data/adb/vcamgd; " +
+            "mkdir -p /data/local/tmp/vcamgd /data/adb/vcamgd /dev/vcam; " +
                 "echo 0 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; " +
                 "setenforce 0; " +
                 "killall vcplax 2>/dev/null; " +
                 "chattr -i /data/camera 2>/dev/null; rm -rf /data/camera /data/samera 2>/dev/null; " +
-                "cp '$base/libvc.so' /data/libvc.so; " +
-                "cp '$base/libshadowhook.so' /data/libvc++.so; " +
-                "cp '$base/vcplax.so' /data/vcplax; " +
-                "cp '$base/kinginject' /data/local/tmp/vcamgd/kinginject 2>/dev/null; " +
-                "cp '$base/kinginject' /data/adb/vcamgd/kinginject 2>/dev/null; " +
-                "chmod 700 /data/vcplax; " +
-                "chmod 755 /data/libvc.so /data/libvc++.so; " +
-                "chmod 700 /data/local/tmp/vcamgd/kinginject /data/adb/vcamgd/kinginject 2>/dev/null; " +
-                "chcon u:object_r:system_lib_file:s0 /data/vcplax /data/libvc.so /data/libvc++.so 2>/dev/null; " +
-                "chcon u:object_r:system_file:s0 /data/vcplax 2>/dev/null; " +
-                "chcon u:object_r:system_file:s0 /data/local/tmp/vcamgd/kinginject 2>/dev/null; " +
-                "cp /data/libvc.so /data/local/tmp/vcamgd/libvc.so; " +
-                "cp /data/libvc++.so /data/local/tmp/vcamgd/libvc++.so; " +
-                "cp /data/vcplax /data/local/tmp/vcamgd/vcplax; " +
-                "cp /data/libvc.so /data/adb/vcamgd/libvc.so; " +
-                "cp /data/libvc++.so /data/adb/vcamgd/libvc++.so; " +
-                "cp /data/vcplax /data/adb/vcamgd/vcplax; " +
-                "chmod 755 /data/local/tmp/vcamgd/libvc.so /data/local/tmp/vcamgd/libvc++.so; " +
-                "chmod 755 /data/adb/vcamgd/libvc.so /data/adb/vcamgd/libvc++.so; " +
-                "chmod 700 /data/local/tmp/vcamgd/vcplax /data/adb/vcamgd/vcplax; " +
-                "chcon u:object_r:magisk_file:s0 /data/local/tmp/vcamgd /data/local/tmp/vcamgd/* 2>/dev/null; " +
-                "chcon u:object_r:magisk_file:s0 /data/adb/vcamgd /data/adb/vcamgd/* 2>/dev/null; " +
-                "mkdir -p /dev/vcam; " +
-                "cp /data/libvc.so /dev/vcam/libvc.so; " +
-                "cp /data/libvc++.so /dev/vcam/libvc++.so; " +
-                "cp /data/libvc++.so /data/libshadowhook.so; " +
-                "cp /data/libvc++.so /dev/vcam/libshadowhook.so; " +
-                "chmod 755 /dev/vcam /dev/vcam/libvc.so /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so /data/libshadowhook.so; " +
-                "chcon u:object_r:system_lib_file:s0 /dev/vcam/libvc.so /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so /data/libshadowhook.so 2>/dev/null; " +
+                libPart +
                 "echo SDK=$sdk; " +
                 "setsid /data/vcplax $server >>/data/local/tmp/vcamgd/vcplax.log 2>&1 < /dev/null & " +
-                "sleep 0.45; pidof vcplax; ls -lZ /data/vcplax /data/libvc.so /dev/vcam/libvc.so 2>&1 | head -8; echo OK",
+                "sleep 0.45; pidof vcplax; ls -lZ /dev/vcam/libvc.so /data/libvc.so 2>&1 | head -6; echo OK",
             timeoutSec = 16,
         )
         Log.i(TAG, "deploy: $out")
