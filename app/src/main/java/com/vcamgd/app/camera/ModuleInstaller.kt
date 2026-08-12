@@ -16,7 +16,7 @@ object ModuleInstaller {
     private const val ASSET_ZIP = "vcamgd-magisk.zip"
     private const val MODULE_DIR = "/data/adb/modules/vcamgd"
     private const val MODULE_PROP = "$MODULE_DIR/module.prop"
-    private const val EMBEDDED_VERSION_CODE = 13
+    private const val EMBEDDED_VERSION_CODE = 14
 
     sealed class Result {
         data object AlreadyInstalled : Result()
