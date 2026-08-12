@@ -11,8 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
+ * v0.10.9: fix load-bias libdl (r--p+r-xp) — PC dlopen errado no A16.
  * v0.10.8: kinginject stack-path (sem mmap/BTI) + maps sem falso cfi shadow.
- * v0.10.7: kinginject v2 (ELF dlopen + mmap syscall) + diag ki/maps.
  */
 object UniversalEngine {
     private const val TAG = "KingVCam-Universal"
