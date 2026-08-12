@@ -11,7 +11,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import com.vcamgd.app.VCamApp
-import com.vcamgd.app.camera.VcplaxEngine
+import com.vcamgd.app.camera.KingEngine
 import com.vcamgd.app.camera.VirtualCameraController
 import com.vcamgd.app.camera.VirtualCameraStatus
 import com.vcamgd.app.data.AppPreferences
@@ -30,7 +30,6 @@ data class MainUiState(
     val camera: VirtualCameraStatus = VirtualCameraStatus(),
     val busy: Boolean = false,
     val message: String? = null,
-    /** legado Zygisk — vcplax nao precisa reboot */
     val needsReboot: Boolean = false,
     val moduleMessage: String? = null,
 )
@@ -54,7 +53,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         refresh()
-        warmVcplax()
+        warmKingEngine()
     }
 
     fun refresh() {
@@ -65,30 +64,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Prepara motor vcplax (copia libs + sobe daemon). Sem Magisk ZIP. */
-    fun warmVcplax() {
+    /** Prepara motor proprio (kingvd + Zygisk soft hooks). */
+    fun warmKingEngine() {
         viewModelScope.launch {
-            _uiState.postValue(_uiState.value?.copy(busy = true, moduleMessage = "Preparando motor vcplax..."))
+            _uiState.postValue(_uiState.value?.copy(busy = true, moduleMessage = "Preparando KingEngine..."))
             val result = withContext(Dispatchers.IO) {
-                VcplaxEngine.ensureRunning(getApplication())
+                KingEngine.ensureRunning(getApplication())
             }
             when (result) {
-                is VcplaxEngine.Result.Ok -> {
+                is KingEngine.Result.Ok -> {
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
                             needsReboot = false,
-                            moduleMessage = "Motor vcplax pronto (APK + root)",
+                            moduleMessage = "KingEngine pronto (kingvd + Zygisk soft)",
                         ),
                     )
                     controller.refreshModuleStatus()
                 }
-                is VcplaxEngine.Result.Failed -> {
+                is KingEngine.Result.Failed -> {
+                    val reboot = result.reason.startsWith("REBOOT_REQUIRED:")
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
-                            needsReboot = false,
-                            moduleMessage = "Motor: ${result.reason}",
+                            needsReboot = reboot,
+                            moduleMessage = if (reboot) {
+                                "Modulo Zygisk instalado — reinicie o telefone"
+                            } else {
+                                "Motor: ${result.reason}"
+                            },
                         ),
                     )
                 }
@@ -96,8 +100,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Compat com UI antiga (botao reinstalar). */
-    fun ensureEmbeddedModule() = warmVcplax()
+    fun ensureEmbeddedModule() = warmKingEngine()
 
     fun clearNeedsReboot() {
         _uiState.postValue(_uiState.value?.copy(needsReboot = false))
@@ -128,11 +131,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.postValue(_uiState.value?.copy(busy = true))
             if (enable) {
                 val boot = withContext(Dispatchers.IO) {
-                    VcplaxEngine.ensureRunning(getApplication())
+                    KingEngine.ensureRunning(getApplication())
                 }
-                if (boot is VcplaxEngine.Result.Failed) {
-                    _uiState.postValue(_uiState.value?.copy(busy = false))
-                    toast("Root/motor: ${boot.reason}")
+                if (boot is KingEngine.Result.Failed) {
+                    val reboot = boot.reason.startsWith("REBOOT_REQUIRED:")
+                    _uiState.postValue(_uiState.value?.copy(busy = false, needsReboot = reboot))
+                    toast(
+                        if (reboot) "Reinicie o telefone antes de ativar"
+                        else "Motor: ${boot.reason}",
+                    )
                     return@launch
                 }
             }

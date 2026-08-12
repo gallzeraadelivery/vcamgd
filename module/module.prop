@@ -1,6 +1,6 @@
 id=vcamgd
-name=VCamGD Virtual Camera
-version=v0.7.0
-versionCode=11
+name=KingVCam Engine
+version=v0.9.0
+versionCode=13
 author=vcamgd
-description=OVCAM-like soft inject after session open. APK-only. Android 12-16.
+description=KingEngine soft inject (kingvd IPC + Zygisk/Pine). Android 12-16. 16KB page.

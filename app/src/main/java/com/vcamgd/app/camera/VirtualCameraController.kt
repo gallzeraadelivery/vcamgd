@@ -10,7 +10,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
-import java.io.File
 
 enum class VirtualCameraState {
     DISABLED,
@@ -28,22 +27,23 @@ data class VirtualCameraStatus(
 )
 
 /**
- * Controller principal: motor vcplax (APK base liberado).
- * Mantem IPC legado so para status/compat.
+ * Controller v0.9: motor proprio [KingEngine] + hooks soft Zygisk.
  */
 class VirtualCameraController(private val context: Context) {
     private val _status = MutableStateFlow(VirtualCameraStatus())
     val status: StateFlow<VirtualCameraStatus> = _status.asStateFlow()
 
     suspend fun refreshModuleStatus() {
-        val alive = withContext(Dispatchers.IO) { VcplaxEngine.isAlive(context) }
+        val alive = withContext(Dispatchers.IO) { KingEngine.isAlive() }
+        val hook = withContext(Dispatchers.IO) { NativeBridge.readModuleStatus() }
         _status.value = _status.value.copy(
-            moduleInstalled = alive,
-            zygiskEvent = if (alive) "vcplax binder OK" else "vcplax parado",
+            moduleInstalled = alive || NativeBridge.isModulePresent(),
+            zygiskEvent = if (alive) "kingvd: ${KingEngine.statusLine()} | $hook" else hook,
             message = when {
-                alive && _status.value.state == VirtualCameraState.ENABLED -> "Virtual ativa (vcplax)"
-                alive -> "Motor vcplax pronto"
-                else -> "Motor parado — ative a virtual (instala sozinho com root)"
+                alive && _status.value.state == VirtualCameraState.ENABLED ->
+                    "Virtual ativa (KingEngine)"
+                alive -> "Motor kingvd pronto"
+                else -> "Motor parado — Magisk+Zygisk + root"
             },
         )
     }
@@ -55,12 +55,16 @@ class VirtualCameraController(private val context: Context) {
     ): Result<Unit> {
         _status.value = _status.value.copy(
             state = VirtualCameraState.ENABLING,
-            message = "Iniciando motor vcplax...",
+            message = "Iniciando motor KingEngine...",
         )
-        delay(100)
+        delay(50)
 
-        val boot = withContext(Dispatchers.IO) { VcplaxEngine.ensureRunning(context) }
-        if (boot is VcplaxEngine.Result.Failed) {
+        val boot = withContext(Dispatchers.IO) { KingEngine.ensureRunning(context) }
+        if (boot is KingEngine.Result.Failed) {
+            if (boot.reason.startsWith("REBOOT_REQUIRED:")) {
+                fail("Reinicie o telefone uma vez (modulo Zygisk instalado)")
+                return Result.failure(IllegalStateException(boot.reason))
+            }
             fail(boot.reason)
             return Result.failure(IllegalStateException(boot.reason))
         }
@@ -71,63 +75,51 @@ class VirtualCameraController(private val context: Context) {
                     fail("Selecione um arquivo de video")
                     return Result.failure(IllegalArgumentException("missing local video"))
                 }
-                val staged = withContext(Dispatchers.IO) { stageLocalToPath(localUri) }
-                if (staged == null) {
+                val staged = withContext(Dispatchers.IO) {
+                    NativeBridge.setLocalVideoSource(context, localUri)
+                }
+                if (!staged) {
                     fail("Falha ao preparar video (root/storage)")
                     return Result.failure(IllegalStateException("stage failed"))
                 }
-                staged
+                "/data/local/tmp/vcamgd/current.mp4"
             }
             VideoSourceType.NETWORK_STREAM -> {
                 val url = networkUrl.trim()
                 if (url.isBlank()) {
-                    fail("Informe URL RTSP/HTTP/RTMP")
+                    fail("Informe URL RTSP/HTTP")
                     return Result.failure(IllegalArgumentException("missing url"))
                 }
+                withContext(Dispatchers.IO) { NativeBridge.setNetworkSource(context, url) }
                 url
             }
             VideoSourceType.USB_TRANSFER -> {
-                fail("USB: use arquivo/rede neste motor")
+                fail("USB ainda nao suportado no motor proprio")
                 return Result.failure(IllegalStateException("usb unsupported"))
             }
         }
 
-        // Espelho IPC legado (status UI)
-        withContext(Dispatchers.IO) {
-            when (sourceType) {
-                VideoSourceType.LOCAL_FILE ->
-                    NativeBridge.setLocalVideoSource(context, localUri!!)
-                VideoSourceType.NETWORK_STREAM ->
-                    NativeBridge.setNetworkSource(context, networkUrl)
-                else -> Unit
-            }
+        val play = withContext(Dispatchers.IO) { KingEngine.startPlay(playTarget) }
+        if (play is KingEngine.Result.Failed) {
+            fail(play.reason)
+            return Result.failure(IllegalStateException(play.reason))
         }
 
-        val code = withContext(Dispatchers.IO) {
-            VcplaxEngine.startPlay(playTarget, loop = true, autoRotate = false)
-        }
-        Log.i("KingVCam", "startPlay code=$code path=$playTarget")
-
-        // Na referencia: code==0 => "替换失败"; qualquer !=0 = OK
-        return if (code != 0) {
-            _status.value = VirtualCameraStatus(
-                state = VirtualCameraState.ENABLED,
-                message = "Virtual ON (vcplax). Abra a camera do telefone.",
-                usingRealCamera = false,
-                moduleInstalled = true,
-                zygiskEvent = "startPlay=$code",
-            )
-            withContext(Dispatchers.IO) { NativeBridge.restartCameraApps() }
-            Result.success(Unit)
-        } else {
-            fail("Motor recusou play (code=0)")
-            Result.failure(IllegalStateException("startPlay=0"))
-        }
+        withContext(Dispatchers.IO) { NativeBridge.restartCameraApps() }
+        _status.value = VirtualCameraStatus(
+            state = VirtualCameraState.ENABLED,
+            message = "Virtual ON (KingEngine). Reabra a camera.",
+            usingRealCamera = false,
+            moduleInstalled = true,
+            zygiskEvent = KingEngine.statusLine(),
+        )
+        Log.i("KingVCam", "enable OK target=$playTarget")
+        return Result.success(Unit)
     }
 
     suspend fun disable(): Result<Unit> {
         withContext(Dispatchers.IO) {
-            VcplaxEngine.stopPlay()
+            KingEngine.stopPlay()
             NativeBridge.disable(context)
             NativeBridge.restartCameraApps()
         }
@@ -135,14 +127,14 @@ class VirtualCameraController(private val context: Context) {
             state = VirtualCameraState.DISABLED,
             message = "Virtual OFF — camera real",
             usingRealCamera = true,
-            moduleInstalled = VcplaxEngine.isAlive(context),
+            moduleInstalled = KingEngine.isAlive() || NativeBridge.isModulePresent(),
             zygiskEvent = "stopped",
         )
         return Result.success(Unit)
     }
 
     fun switchToRealCamera() {
-        VcplaxEngine.stopPlay()
+        KingEngine.switchReal()
         NativeBridge.switchToReal(context)
         _status.value = _status.value.copy(
             usingRealCamera = true,
@@ -152,40 +144,13 @@ class VirtualCameraController(private val context: Context) {
     }
 
     fun switchToVirtualCamera() {
+        KingEngine.switchVirtual()
         NativeBridge.switchToVirtual(context)
-        // Re-play ultimo caminho via prefs se existir
-        val prefs = context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
-        val path = prefs.getString("uri", null)?.takeIf { it.startsWith("/") }
-            ?: prefs.getString("url", null)
-        if (!path.isNullOrBlank()) {
-            VcplaxEngine.startPlay(path, loop = true, autoRotate = false)
-        }
         _status.value = _status.value.copy(
             usingRealCamera = false,
             message = "Modo VIRTUAL",
             state = VirtualCameraState.ENABLED,
         )
-    }
-
-    private fun stageLocalToPath(uri: Uri): String? {
-        return try {
-            val cache = File(context.cacheDir, "vcam_input.mp4")
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                cache.outputStream().use { output -> input.copyTo(output) }
-            } ?: return null
-            val dest = "/data/local/tmp/vcamgd/current.mp4"
-            val script =
-                "mkdir -p /data/local/tmp/vcamgd; " +
-                    "cp '${cache.absolutePath}' '$dest'; chmod 666 '$dest'; " +
-                    "cp '$dest' /data/adb/vcamgd/current.mp4 2>/dev/null; echo OK"
-            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", script))
-            val out = process.inputStream.bufferedReader().readText()
-            process.waitFor()
-            if (out.contains("OK") || File(dest).exists()) dest else cache.absolutePath
-        } catch (t: Throwable) {
-            Log.e("KingVCam", "stageLocalToPath", t)
-            null
-        }
     }
 
     private fun fail(message: String) {

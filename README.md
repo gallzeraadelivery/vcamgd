@@ -1,48 +1,35 @@
 # VCamGD / KingVCam
 
-Camera virtual com **APK unico** + **root**: motor nativo **vcplax** / `libvc` / ShadowHook (build liberado), sem depender de LSPosed nem de ZIP Magisk.
+Camera virtual **KingEngine** (motor proprio): daemon `kingvd` + hooks soft Zygisk/Pine.
 
-**Alvo:** Android 12–16.
+**Alvo:** Android 12–16. Sem LSPosed.
 
 Repositorio: https://github.com/gallzeraadelivery/vcamgd  
 Releases: https://github.com/gallzeraadelivery/vcamgd/releases
 
-## Instalacao (so o APK)
+## Instalacao
 
-1. Dispositivo **root** (`su`)  
+1. Magisk com **Zygisk ON** + root  
 2. Instalar `vcamgd-app-debug.apk`  
-3. Abrir KingVCam → conceder root  
-4. O app extrai o motor e sobe `/data/vcplax` (Binder)  
-5. Escolher video/URL → ativar virtual → abrir a camera do telefone  
+3. Abrir → conceder root → reboot se pedido (1x)  
+4. Video → ativar virtual → **reabrir** a camera  
 
-Reboot normalmente **nao** e necessario no motor vcplax.
+Build offline legado (vcplax, 12–13): release **v0.8.1**.
 
-## Motor (v0.8+)
+## Motor v0.9 (proprio)
 
-Fluxo espelhado do APK base liberado:
-
-1. Extrai `libvc.so`, `libshadowhook.so`, `vcplax.so` dos assets  
-2. Root: copia para `/data/libvc.so`, `/data/libvc++.so`, `/data/vcplax`  
-3. Executa `/data/vcplax <ServerName>&`  
-4. Controle via Binder `com.xiaomi.vlive.IMyBinderService` (play/stop)
-
-O modulo Zygisk/Pine antigo permanece no repo como legado opcional.
-
-## Real vs Virtual
-
-| Modo | Comportamento |
-|------|----------------|
-| desligado / real | `stopPlay` — camera OEM |
-| virtual | Daemon injeta feed (mp4 / rtmp/rtsp/http) |
+1. `kingvd` — daemon nativo (unix socket) escreve `control.json`  
+2. Zygisk injeta `HookEntry` (soft): preview apos sessao Camera  
+3. IPC: `/data/local/tmp/vcamgd/`  
 
 ## Build
 
 ```bat
+powershell -ExecutionPolicy Bypass -File scripts\build-kingvd.ps1
+powershell -ExecutionPolicy Bypass -File scripts\pack-module.ps1
 gradlew.bat :app:assembleDebug
 ```
 
-Libs do motor em `app/src/main/assets/vcam-engine/{arm64-v8a,armeabi-v7a}/`.
-
 ## Uso responsavel
 
-Apenas estudo/pesquisa. Use apenas engines/binarios que voce tenha direito de usar.
+Apenas estudo/pesquisa.

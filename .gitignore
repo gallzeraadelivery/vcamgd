@@ -15,6 +15,7 @@
 /apktool-out/
 /base-decompiled/
 /base-extracted/
+/base-apktool/
 /.jadx/
 hs_err_pid*.log
 vcama16.apk
@@ -43,3 +44,8 @@ Thumbs.db
 node_modules/
 captures/
 *.log
+
+# NDK intermediates
+native/**/obj/
+native/**/libs/
+

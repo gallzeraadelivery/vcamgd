@@ -30,7 +30,7 @@ import top.canyie.pine.callback.MethodHook;
  * - Modo "hard" opcional (control.inject=hard) para apps que precisam bloquear o HAL.
  */
 public final class HookEntry {
-    private static final String TAG = "VCamGD-ZygiskHook";
+    private static final String TAG = "KingVCam-KingHook";
     public static final String CONTROL_DIR = "/data/local/tmp/vcamgd";
     private static final String CONTROL = CONTROL_DIR + "/control.json";
     private static final String VIDEO = CONTROL_DIR + "/current.mp4";

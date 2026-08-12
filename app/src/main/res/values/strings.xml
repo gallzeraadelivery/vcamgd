@@ -4,7 +4,7 @@
     <string name="tab_home">Inicio</string>
     <string name="tab_control">Controle</string>
     <string name="tab_status">Status</string>
-    <string name="home_subtitle">So o APK + root: motor vcplax sobe sozinho (sem Magisk ZIP)</string>
+    <string name="home_subtitle">Motor proprio KingEngine (kingvd + Zygisk soft). Android 12–16</string>
     <string name="video_source">Fonte de video</string>
     <string name="source_local">Arquivo</string>
     <string name="source_network">Rede</string>

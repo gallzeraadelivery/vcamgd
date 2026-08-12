@@ -36,15 +36,15 @@ class MainActivity : AppCompatActivity() {
         binding.bottomNav.setupWithNavController(navHost.navController)
 
         vm = ViewModelProvider(this)[MainViewModel::class.java]
-        // Motor primario: vcplax (warm no ViewModel). Zygisk legado fica opcional.
+        // Motor primario: KingEngine (kingvd + Zygisk soft)
         vm.uiState.observe(this) { state ->
             if (state.needsReboot && !rebootDialogShown) {
                 rebootDialogShown = true
                 AlertDialog.Builder(this)
                     .setTitle("Reinicie o telefone")
                     .setMessage(
-                        "Reinicie uma vez se o sistema pedir (legado Zygisk).\n" +
-                            "Com o motor vcplax, normalmente nao precisa de reboot.",
+                        "O KingEngine instalou o modulo Zygisk (hooks soft).\n\n" +
+                            "Reinicie uma vez para a camera virtual funcionar.",
                     )
                     .setPositiveButton("OK") { _, _ -> vm.clearNeedsReboot() }
                     .setCancelable(false)
