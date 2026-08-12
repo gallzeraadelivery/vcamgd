@@ -16,9 +16,12 @@ android {
         versionName = "0.9.2"
     }
 
+    // Sideload/root: release assinado com debug keystore (igual releases 0.9.x).
+    // Sem isso, assembleRelease gera APK unsigned e o Android recusa instalar.
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
