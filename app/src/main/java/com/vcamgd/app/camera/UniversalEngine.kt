@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
+ * v0.10.6: su -mm (mount master) — HyperOS Magisk namespace.
  * v0.10.5: kinginject fallback + libs em /dev e bind /system (HyperOS).
  * v0.10.4: estabiliza crash — nao mata HAL no boot, binder com try/catch.
  */
@@ -256,12 +257,12 @@ object UniversalEngine {
 
     fun isLibVcInjected(): Boolean {
         return try {
-            val out = RootShell.run(
+            val out = RootShell.runGlobal(
                 "PID=\$(pidof cameraserver | awk '{print \$1}'); " +
                     "if [ -z \"\$PID\" ]; then echo NO_CAM; exit 0; fi; " +
                     "cat /proc/\$PID/maps 2>/dev/null | grep -iE 'libvc|shadowhook|/dev/vcam|libvc\\+\\+' | head -8; " +
                     "echo END",
-                timeoutSec = 5,
+                timeoutSec = 6,
             )
             out.contains("libvc", ignoreCase = true) ||
                 out.contains("shadowhook", ignoreCase = true) ||
@@ -272,8 +273,7 @@ object UniversalEngine {
     }
 
     fun prepareCameraServerForInject() {
-        // Bounce leve: so cameraserver (menos risco de crash de sistema)
-        val out = RootShell.run(
+        val out = RootShell.runGlobal(
             "OLDPID=\$(pidof cameraserver 2>/dev/null | awk '{print \$1}'); " +
                 "killall -9 cameraserver 2>/dev/null; " +
                 "[ -n \"\$OLDPID\" ] && kill -9 \"\$OLDPID\" 2>/dev/null; " +
@@ -294,7 +294,7 @@ object UniversalEngine {
 
     private fun openInjectWindow(sdk: Int) {
         SelinuxLive.setEnforcing(false)
-        RootShell.run(
+        RootShell.runGlobal(
             "echo 0 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; " +
                 "MP=\$(command -v magiskpolicy 2>/dev/null || echo /data/adb/magisk/magiskpolicy); " +
                 "\"\$MP\" --live 'permissive cameraserver' >/dev/null 2>&1; " +
@@ -305,7 +305,7 @@ object UniversalEngine {
             timeoutSec = 8,
         )
         if (sdk >= 35) {
-            RootShell.run("setenforce 0", timeoutSec = 3)
+            RootShell.runGlobal("setenforce 0", timeoutSec = 3)
         }
     }
 

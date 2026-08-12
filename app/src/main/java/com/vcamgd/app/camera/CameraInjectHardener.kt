@@ -68,7 +68,7 @@ object CameraInjectHardener {
         val domainCmds = PERMISSIVE_DOMAINS.joinToString("; ") { d ->
             "\"\$MP\" --live 'permissive $d' >/dev/null 2>&1"
         }
-        val out = RootShell.run(
+        val out = RootShell.runGlobal(
             "mkdir -p /data/local/tmp/vcamgd /data/adb/vcamgd; " +
                 "echo 0 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; " +
                 "setenforce 0; " +
@@ -97,7 +97,8 @@ object CameraInjectHardener {
                 "settings put global hidden_api_policy 1 >/dev/null 2>&1; " +
                 "settings put system miui_optimization 0 >/dev/null 2>&1; " +
                 "getenforce; " +
-                "cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; " +
+                "PTR=\$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo none); echo ptrace=\$PTR; " +
+                "echo mm=\$(if id >/dev/null 2>&1; then echo 1; else echo 0; fi); " +
                 "echo WINDOW_OK",
             timeoutSec = 16,
         )
@@ -106,9 +107,9 @@ object CameraInjectHardener {
     }
 
     fun keepWindowAlive() {
-        RootShell.run(
+        RootShell.runGlobal(
             "echo 0 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; setenforce 0",
-            timeoutSec = 3,
+            timeoutSec = 4,
         )
     }
 
@@ -117,7 +118,7 @@ object CameraInjectHardener {
         val killCmds = CAMERA_HAL_NAMES.joinToString("; ") { name ->
             "killall -9 '$name' 2>/dev/null"
         }
-        val out = RootShell.run(
+        val out = RootShell.runGlobal(
             "OLDPID=\$(pidof cameraserver 2>/dev/null | awk '{print \$1}'); " +
                 "$killCmds; " +
                 "[ -n \"\$OLDPID\" ] && kill -9 \"\$OLDPID\" 2>/dev/null; " +
@@ -139,7 +140,7 @@ object CameraInjectHardener {
      * HyperOS: /dev/vcam + bind em /system/lib64 (linker rejeita /data as vezes).
      */
     fun redeployLibPaths(filesDirEngine: String): String {
-        val out = RootShell.run(
+        val out = RootShell.runGlobal(
             "setenforce 0; " +
                 "mkdir -p /data/adb/vcamgd /data/local/tmp/vcamgd /dev/vcam; " +
                 "if [ -d '$filesDirEngine' ]; then " +
@@ -185,7 +186,7 @@ object CameraInjectHardener {
      * Tenta varios caminhos de lib.
      */
     fun runKingInject(): String {
-        val out = RootShell.run(
+        val out = RootShell.runGlobal(
             "setenforce 0; " +
                 "echo 0 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; " +
                 "KI=; " +
@@ -214,21 +215,24 @@ object CameraInjectHardener {
     }
 
     fun snapshotDiag(): String {
-        return RootShell.run(
+        val mm = if (RootShell.supportsMountMaster()) "yes" else "no"
+        return RootShell.runGlobal(
             "echo brand=${Build.BRAND}/${Build.MANUFACTURER}; " +
                 "echo sdk=${Build.VERSION.SDK_INT}/${Build.VERSION.RELEASE}; " +
                 "echo enforce=\$(getenforce 2>/dev/null); " +
-                "echo ptrace=\$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null); " +
+                "PTR=\$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo none); echo ptrace=\$PTR; " +
+                "echo mm=$mm; " +
                 "echo cam=\$(pidof cameraserver 2>/dev/null); " +
                 "echo vcplax=\$(pidof vcplax 2>/dev/null); " +
                 "PID=\$(pidof cameraserver 2>/dev/null | awk '{print \$1}'); " +
                 "if [ -n \"\$PID\" ]; then " +
                 "echo context=\$(cat /proc/\$PID/attr/current 2>/dev/null); " +
-                "cat /proc/\$PID/maps 2>/dev/null | grep -E 'libvc|shadow|vcplax|vcam' | head -8; " +
+                "MAPS=\$(cat /proc/\$PID/maps 2>/dev/null | grep -iE 'libvc|shadow|vcam' | head -5); " +
+                "if [ -n \"\$MAPS\" ]; then echo \"\$MAPS\"; else echo maps=empty; fi; " +
                 "fi; " +
-                "tail -n 15 /data/local/tmp/vcamgd/kinginject.log 2>/dev/null; " +
-                "tail -n 10 /data/local/tmp/vcamgd/vcplax.log 2>/dev/null",
-            timeoutSec = 10,
+                "echo ki=\$(tail -n 3 /data/local/tmp/vcamgd/kinginject.log 2>/dev/null | tr '\\n' ';'); " +
+                "echo vx=\$(tail -n 2 /data/local/tmp/vcamgd/vcplax.log 2>/dev/null | tr '\\n' ';')",
+            timeoutSec = 12,
         )
     }
 }

@@ -182,8 +182,8 @@ object VcplaxEngine {
     private fun deployAndStart(context: Context, abi: String, server: String) {
         val base = File(context.filesDir, "vcam-engine/$abi").absolutePath
         val sdk = Build.VERSION.SDK_INT
-        // Labels: system_lib_file + copia magisk_file em /data/adb (HyperOS)
-        val out = RootShell.run(
+        // Mount master (su -mm): sem isso o vcplax nao ptrace o cameraserver no HyperOS
+        val out = RootShell.runGlobal(
             "mkdir -p /data/local/tmp/vcamgd /data/adb/vcamgd; " +
                 "echo 0 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; " +
                 "setenforce 0; " +
@@ -211,7 +211,6 @@ object VcplaxEngine {
                 "chmod 700 /data/local/tmp/vcamgd/vcplax /data/adb/vcamgd/vcplax; " +
                 "chcon u:object_r:magisk_file:s0 /data/local/tmp/vcamgd /data/local/tmp/vcamgd/* 2>/dev/null; " +
                 "chcon u:object_r:magisk_file:s0 /data/adb/vcamgd /data/adb/vcamgd/* 2>/dev/null; " +
-                // HyperOS: libs em /dev (exec) — linker do cameraserver aceita melhor que /data
                 "mkdir -p /dev/vcam; " +
                 "cp /data/libvc.so /dev/vcam/libvc.so; " +
                 "cp /data/libvc++.so /dev/vcam/libvc++.so; " +
@@ -220,7 +219,7 @@ object VcplaxEngine {
                 "echo SDK=$sdk; " +
                 "setsid /data/vcplax $server >>/data/local/tmp/vcamgd/vcplax.log 2>&1 < /dev/null & " +
                 "sleep 0.45; pidof vcplax; ls -lZ /data/vcplax /data/libvc.so /dev/vcam/libvc.so 2>&1 | head -8; echo OK",
-            timeoutSec = 14,
+            timeoutSec = 16,
         )
         Log.i(TAG, "deploy: $out")
     }
@@ -231,14 +230,14 @@ object VcplaxEngine {
      */
     fun restartFromAdbPath(context: Context) {
         val server = prefs(context).getString(KEY_SERVER, null) ?: return
-        val out = RootShell.run(
+        val out = RootShell.runGlobal(
             "setenforce 0; " +
                 "echo 0 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; " +
                 "if [ ! -x /data/adb/vcamgd/vcplax ]; then echo NO_ADB_BIN; exit 0; fi; " +
                 "killall vcplax 2>/dev/null; " +
                 "setsid /data/adb/vcamgd/vcplax $server >>/data/local/tmp/vcamgd/vcplax.log 2>&1 < /dev/null & " +
                 "sleep 0.5; pidof vcplax; echo ADB_START",
-            timeoutSec = 10,
+            timeoutSec = 12,
         )
         Log.i(TAG, "restartFromAdbPath: $out")
         Thread.sleep(300)
