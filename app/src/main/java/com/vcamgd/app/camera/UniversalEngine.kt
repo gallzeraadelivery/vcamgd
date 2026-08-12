@@ -5,12 +5,14 @@ import android.os.Build
 import android.util.Log
 import com.vcamgd.app.root.RootShell
 import com.vcamgd.app.root.SelinuxLive
+import com.vcamgd.app.util.KingVCamLog
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
+ * v0.10.13: log auditavel (por que preview nao mostra video).
  * v0.10.12: relink soft (sem killall) — preserva inject no HyperOS.
  * v0.10.11: relink vcplax apos inject + play multi-path (video real).
  * v0.10.10: pos-inject — shadowhook primeiro, video legivel, force-stop enxuto.
@@ -73,10 +75,12 @@ object UniversalEngine {
                             "hyper=${CameraInjectHardener.isHyperOsFamily()} " +
                             "se=${se.ok} inject=${isLibVcInjected()}",
                     )
+                    KingVCamLog.i("boot", lastDiag.detail)
                     Result.Ok
                 }
                 is Result.Failed -> {
                     lastDiag = Diagnostics(engine = "none", detail = r.reason)
+                    KingVCamLog.e("boot", r.reason)
                     Result.Failed(r.reason)
                 }
             }
@@ -98,6 +102,7 @@ object UniversalEngine {
 
     fun startPlay(pathOrUrl: String): Result {
         return try {
+            KingVCamLog.i("play", "start path=$pathOrUrl")
             openInjectWindow(Build.VERSION.SDK_INT)
             runCatching { CameraInjectHardener.openWindow() }
             virtualSession = true
@@ -122,23 +127,29 @@ object UniversalEngine {
                         .take(8)
                         .joinToString(" | ")
                 }.getOrDefault("")
+                KingVCamLog.e("inject", "FALHOU — $snap")
+                KingVCamLog.auditWhyNoPreview("inject_fail")
                 return Result.Failed(
                     "Inject falhou (libvc fora do cameraserver). " +
                         "mm/ptrace ok nao basta no HyperOS A16 — veja ki= no diag. " +
                         "Diag: $snap",
                 )
             }
+            KingVCamLog.i("inject", "OK inject=true")
 
             var code = playWithFallbacks(pathOrUrl)
             Log.i(TAG, "startPlay result=$code path=$pathOrUrl")
+            KingVCamLog.i("play", "code=$code apos fallbacks")
 
             // Confirma cameraserver ainda vivo (libvc quebrado as vezes mata o processo)
             val camPid = RootShell.runGlobal("pidof cameraserver 2>/dev/null", timeoutSec = 3).trim()
             if (!camPid.any { it.isDigit() }) {
                 Log.w(TAG, "cameraserver morreu apos inject/play — re-inject")
+                KingVCamLog.w("cam", "cameraserver morreu apos play — re-inject")
                 if (ensureInjected(retries = 2)) {
                     Thread.sleep(400)
                     code = playWithFallbacks(pathOrUrl)
+                    KingVCamLog.i("play", "re-play code=$code")
                 }
             }
 
@@ -146,6 +157,7 @@ object UniversalEngine {
             // Soft re-inject se o map sumiu apos play (sem bounce)
             if (!injected) {
                 Log.w(TAG, "inject sumiu apos play — soft re-inject")
+                KingVCamLog.w("inject", "sumiu apos play — soft re-inject")
                 CameraInjectHardener.keepWindowAlive()
                 CameraInjectHardener.runKingInject()
                 Thread.sleep(300)
@@ -153,6 +165,7 @@ object UniversalEngine {
                 if (injected) {
                     appContext?.let { VcplaxEngine.ensureBinderAlive(it) }
                     code = playWithFallbacks(pathOrUrl)
+                    KingVCamLog.i("play", "re-play apos soft inject code=$code")
                 }
             }
             val status2 = VcplaxEngine.playStatus()
@@ -163,14 +176,18 @@ object UniversalEngine {
                 detail = "play=$code status=$status2 inject=$injected alive=$alive2 " +
                     "hyper=${CameraInjectHardener.isHyperOsFamily()}",
             )
+            KingVCamLog.i("play", lastDiag.detail)
 
             // HyperOS / geral: exige inject=true (evita Virtual parcial falso-positivo)
             val ok = injected && (code != 0 || alive2)
             if (ok) {
                 startWatchdog(pathOrUrl)
+                KingVCamLog.auditWhyNoPreview("pos_play_ok_checar_se_preview_e_video")
                 Result.Ok
             } else {
                 stopWatchdog()
+                KingVCamLog.e("play", "FALHOU code=$code status=$status2 inject=$injected")
+                KingVCamLog.auditWhyNoPreview("play_fail")
                 Result.Failed(
                     "startPlay falhou (code=$code status=$status2 inject=$injected). " +
                         "Desligue/ligue a virtual; se persistir, veja Status (ki=/maps=).",
@@ -178,6 +195,7 @@ object UniversalEngine {
             }
         } catch (t: Throwable) {
             Log.e(TAG, "startPlay crash-guard", t)
+            KingVCamLog.e("play", "crash: ${t.message}")
             stopWatchdog()
             virtualSession = false
             Result.Failed(t.message ?: "erro no play")
@@ -254,7 +272,8 @@ object UniversalEngine {
                     Thread.sleep(250)
                     if (isLibVcInjected()) {
                         Log.i(TAG, "libvc injected (kinginject-early) attempt=${attempt + 1}")
-                        // Reatacha vcplax ao cameraserver NOVO — senao play nao alimenta o libvc
+                        KingVCamLog.i("inject", "kinginject-early OK attempt=${attempt + 1}")
+                        // Soft rebind — senao play nao alimenta o libvc
                         relinkVcplaxAfterInject()
                         return isLibVcInjected()
                     }
@@ -263,12 +282,14 @@ object UniversalEngine {
                 // 1) deixa o vcplax tentar sozinho apos bounce
                 if (isLibVcInjected()) {
                     Log.i(TAG, "libvc injected (vcplax) attempt=${attempt + 1}")
+                    KingVCamLog.i("inject", "vcplax OK attempt=${attempt + 1}")
                     relinkVcplaxAfterInject()
                     return isLibVcInjected()
                 }
 
                 // 2) reinicia daemon + redeploy /dev (ainda SEM inject — force ok)
                 Log.w(TAG, "libvc NOT in maps — restarting vcplax attempt=${attempt + 1}")
+                KingVCamLog.w("inject", "maps vazios — restart vcplax attempt=${attempt + 1}")
                 val ctx = appContext
                 if (ctx != null) {
                     runCatching {
@@ -287,6 +308,7 @@ object UniversalEngine {
                 Thread.sleep(300)
                 if (isLibVcInjected()) {
                     Log.i(TAG, "libvc injected (kinginject) attempt=${attempt + 1}")
+                    KingVCamLog.i("inject", "kinginject OK attempt=${attempt + 1}")
                     relinkVcplaxAfterInject()
                     return isLibVcInjected()
                 }
@@ -303,6 +325,7 @@ object UniversalEngine {
             }
             val diag = CameraInjectHardener.snapshotDiag()
             Log.e(TAG, "inject diagnostics:\n$diag")
+            KingVCamLog.e("inject", "esgotou retries — ${diag.lineSequence().take(6).joinToString(" | ")}")
             lastDiag = lastDiag.copy(
                 detail = "maps=${diag.lineSequence().take(5).joinToString(" | ")}",
             )
@@ -372,10 +395,12 @@ object UniversalEngine {
             if (!exists.contains("YES")) continue
             val code = VcplaxEngine.startPlay(path, loop = true, autoRotate = false)
             Log.i(TAG, "play try path=$path code=$code exists=${exists.take(40)}")
+            KingVCamLog.i("play", "try path=$path code=$code ${exists.take(50)}")
             if (code != 0 && code != -1) {
                 Thread.sleep(250)
                 val st = VcplaxEngine.playStatus()
                 Log.i(TAG, "playStatus=$st for $path")
+                KingVCamLog.i("play", "OK path=$path code=$code status=$st")
                 return code
             }
             if (code != -1) best = code

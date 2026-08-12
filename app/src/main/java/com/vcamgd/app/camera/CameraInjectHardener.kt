@@ -216,6 +216,9 @@ object CameraInjectHardener {
             timeoutSec = 30,
         )
         Log.i(TAG, "runKingInject: ${out.take(500)}")
+        runCatching {
+            com.vcamgd.app.util.KingVCamLog.i("kinginject", out.lineSequence().take(8).joinToString(" | "))
+        }
         return out
     }
 

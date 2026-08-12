@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Log
 import com.vcamgd.app.data.VideoSourceType
 import com.vcamgd.app.root.RootShell
+import com.vcamgd.app.util.KingVCamLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -63,10 +64,12 @@ class VirtualCameraController(private val context: Context) {
             state = VirtualCameraState.ENABLING,
             message = "Iniciando motor (vcplax)…",
         )
+        KingVCamLog.i("enable", "inicio source=$sourceType")
         delay(50)
 
         val boot = withContext(Dispatchers.IO) { UniversalEngine.ensureRunning(context) }
         if (boot is UniversalEngine.Result.Failed) {
+            KingVCamLog.e("enable", "boot: ${boot.reason}")
             fail(boot.reason)
             return Result.failure(IllegalStateException(boot.reason))
         }
@@ -80,9 +83,11 @@ class VirtualCameraController(private val context: Context) {
                 }
                 val staged = withContext(Dispatchers.IO) { stageLocalToPath(localUri) }
                 if (staged == null) {
+                    KingVCamLog.e("video", "stage falhou uri=$localUri")
                     fail("Falha ao preparar video (root/storage)")
                     return Result.failure(IllegalStateException("stage failed"))
                 }
+                KingVCamLog.i("video", "staged=$staged")
                 staged
             }
             VideoSourceType.NETWORK_STREAM -> {
@@ -114,6 +119,7 @@ class VirtualCameraController(private val context: Context) {
         _status.value = _status.value.copy(message = "Injetando libvc no cameraserver…")
         val play = withContext(Dispatchers.IO) { UniversalEngine.startPlay(playTarget) }
         if (play is UniversalEngine.Result.Failed) {
+            KingVCamLog.e("enable", "play: ${play.reason}")
             fail(play.reason)
             return Result.failure(IllegalStateException(play.reason))
         }
@@ -137,6 +143,7 @@ class VirtualCameraController(private val context: Context) {
         delay(300)
         withContext(Dispatchers.IO) {
             runCatching { NativeBridge.restartCameraApps() }
+            KingVCamLog.i("enable", "force-stop apps de camera (HyperOS enxuto)")
         }
         delay(500)
         val stillInjected = withContext(Dispatchers.IO) {
@@ -144,9 +151,11 @@ class VirtualCameraController(private val context: Context) {
                 val alive = RootShell.run("pidof cameraserver 2>/dev/null", timeoutSec = 3).trim()
                 if (alive.isEmpty()) {
                     Log.w("KingVCam", "cameraserver morreu apos play — recuperando")
+                    KingVCamLog.w("cam", "morreu apos force-stop — recuperando")
                     UniversalEngine.ensureInjected(retries = 2)
                     UniversalEngine.startPlay(playTarget)
                 } else if (!UniversalEngine.isLibVcInjected()) {
+                    KingVCamLog.w("inject", "sumiu apos force-stop — soft kinginject")
                     // Soft: kinginject sem bounce se so o map sumiu
                     CameraInjectHardener.keepWindowAlive()
                     CameraInjectHardener.runKingInject()
@@ -156,15 +165,23 @@ class VirtualCameraController(private val context: Context) {
             }.getOrDefault(false)
         }
         if (!stillInjected) {
+            KingVCamLog.e("enable", "inject=false apos estabilizar")
+            withContext(Dispatchers.IO) {
+                KingVCamLog.auditWhyNoPreview("enable_inject_lost")
+            }
             fail(
                 "Inject nao ficou no cameraserver (inject=false). " +
                     "Desligue/ligue; se repetir, veja Status (ki=/maps=).",
             )
             return Result.failure(IllegalStateException("inject=false after enable"))
         }
+        withContext(Dispatchers.IO) {
+            KingVCamLog.i("enable", "OK inject=true target=$playTarget")
+            KingVCamLog.auditWhyNoPreview("enable_ok_abrir_camera_e_checar_preview")
+        }
         _status.value = VirtualCameraStatus(
             state = VirtualCameraState.ENABLED,
-            message = "Virtual ON (inject=true). Feche a camera, espere 3s, abra de novo.",
+            message = "Virtual ON (inject=true). Feche a camera, espere 3s, abra de novo. Veja Status → Log se nao for o video.",
             usingRealCamera = false,
             moduleInstalled = true,
             zygiskEvent = runCatching { UniversalEngine.statusLine(context) }.getOrDefault(""),
@@ -244,6 +261,7 @@ class VirtualCameraController(private val context: Context) {
                 timeoutSec = 14,
             )
             Log.i("KingVCam", "stageLocalToPath: ${out.take(240)}")
+            KingVCamLog.i("video", "stage ${out.take(180)}")
             if (out.contains("OK")) {
                 // Overlay/switchVirtual precisam do path absoluto, nao content://
                 context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)

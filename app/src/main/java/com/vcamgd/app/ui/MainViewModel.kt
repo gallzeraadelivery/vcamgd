@@ -20,6 +20,7 @@ import com.vcamgd.app.data.VideoSourceType
 import com.vcamgd.app.root.RootChecker
 import com.vcamgd.app.root.RootStatus
 import com.vcamgd.app.service.OverlayService
+import com.vcamgd.app.util.KingVCamLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -33,6 +34,7 @@ data class MainUiState(
     val message: String? = null,
     val needsReboot: Boolean = false,
     val moduleMessage: String? = null,
+    val auditLog: String = "",
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -189,6 +191,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         viewModelScope.launch { settings.setOverlayEnabled(enabled) }
+    }
+
+    fun setAuditLog(text: String) {
+        _uiState.postValue(_uiState.value?.copy(auditLog = text))
+    }
+
+    /** Snapshot: por que a camera do celular nao mostra o video. */
+    fun auditWhyNoPreview(onDone: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                KingVCamLog.auditWhyNoPreview("manual_status_tab")
+            }
+            _uiState.postValue(_uiState.value?.copy(auditLog = KingVCamLog.dump()))
+            onDone?.invoke()
+            toast("Auditoria de preview gravada no log")
+        }
     }
 
     fun switchReal() {
