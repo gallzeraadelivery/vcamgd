@@ -164,25 +164,53 @@ class VirtualCameraController(private val context: Context) {
                     UniversalEngine.ensureInjected(retries = 2)
                     CameraInjectHardener.freezeLibDeploy = true
                     UniversalEngine.startPlay(playTarget)
-                } else if (!UniversalEngine.isLibVcInjected() || UniversalEngine.mapsHasDeletedLibvc()) {
-                    KingVCamLog.w("inject", "sumiu ou (deleted) — soft kinginject")
+                } else if (!UniversalEngine.isLibVcInjected()) {
+                    // So (deleted) ou vazio — soft re-inject (nao exigir ausencia total de deleted)
+                    KingVCamLog.w(
+                        "inject",
+                        "sem libvc limpo (deleted=${UniversalEngine.mapsHasDeletedLibvc()}) — soft kinginject",
+                    )
                     CameraInjectHardener.keepWindowAlive()
                     CameraInjectHardener.runKingInject()
+                    Thread.sleep(300)
+                    if (!UniversalEngine.isLibVcInjected()) {
+                        CameraInjectHardener.freezeLibDeploy = false
+                        UniversalEngine.ensureInjected(retries = 1)
+                        CameraInjectHardener.freezeLibDeploy = true
+                    }
                     UniversalEngine.startPlay(playTarget)
                 }
-                UniversalEngine.isLibVcInjected() && !UniversalEngine.mapsHasDeletedLibvc()
+                // Re-checa apos breve settle — evita falso negativo
+                Thread.sleep(400)
+                val ok = UniversalEngine.isLibVcInjected()
+                KingVCamLog.i(
+                    "enable",
+                    "stillInjected=$ok deleted=${UniversalEngine.mapsHasDeletedLibvc()} " +
+                        "diag=${UniversalEngine.lastDiag.detail}",
+                )
+                ok
             }.getOrDefault(false)
         }
         if (!stillInjected) {
-            KingVCamLog.e("enable", "inject=false apos estabilizar")
-            withContext(Dispatchers.IO) {
-                KingVCamLog.auditWhyNoPreview("enable_inject_lost")
+            // Ultima chance: statusLine as vezes ja mostra inject=true
+            val retryOk = withContext(Dispatchers.IO) {
+                CameraInjectHardener.keepWindowAlive()
+                CameraInjectHardener.runKingInject()
+                Thread.sleep(400)
+                UniversalEngine.isLibVcInjected()
             }
-            fail(
-                "Inject nao ficou no cameraserver (inject=false). " +
-                    "Desligue/ligue; se repetir, veja Status (ki=/maps=).",
-            )
-            return Result.failure(IllegalStateException("inject=false after enable"))
+            if (!retryOk) {
+                KingVCamLog.e("enable", "inject=false apos estabilizar")
+                withContext(Dispatchers.IO) {
+                    KingVCamLog.auditWhyNoPreview("enable_inject_lost")
+                }
+                fail(
+                    "Inject nao ficou no cameraserver (inject=false). " +
+                        "Desligue/ligue; se repetir, veja Status (ki=/maps=).",
+                )
+                return Result.failure(IllegalStateException("inject=false after enable"))
+            }
+            KingVCamLog.w("enable", "inject recuperado no retry final")
         }
         withContext(Dispatchers.IO) {
             KingVCamLog.i("enable", "OK inject=true target=$playTarget")
