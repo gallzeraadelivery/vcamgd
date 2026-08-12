@@ -11,7 +11,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import com.vcamgd.app.VCamApp
-import com.vcamgd.app.camera.VcplaxEngine
+import com.vcamgd.app.camera.UniversalEngine
 import com.vcamgd.app.camera.VirtualCameraController
 import com.vcamgd.app.camera.VirtualCameraStatus
 import com.vcamgd.app.data.AppPreferences
@@ -30,7 +30,6 @@ data class MainUiState(
     val camera: VirtualCameraStatus = VirtualCameraStatus(),
     val busy: Boolean = false,
     val message: String? = null,
-    /** Zygisk legado — vcplax nao precisa reboot */
     val needsReboot: Boolean = false,
     val moduleMessage: String? = null,
 )
@@ -43,6 +42,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: LiveData<MainUiState> = _uiState
 
     init {
+        UniversalEngine.bindContext(application)
         viewModelScope.launch {
             settings.preferences.collectLatest { prefs ->
                 _uiState.postValue(_uiState.value?.copy(prefs = prefs) ?: MainUiState(prefs = prefs))
@@ -54,7 +54,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         refresh()
-        // Nao sobe vcplax no init (Magisk grant pode demorar). Sobe ao ativar / Atualizar.
     }
 
     fun refresh() {
@@ -71,28 +70,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Prepara motor vcplax (APK + root). Sem Magisk ZIP / sem reboot. */
-    fun warmVcplax() {
+    /** Prepara motor universal (12–16). Sem reboot de modulo. */
+    fun warmEngine() {
         viewModelScope.launch {
             _uiState.postValue(
-                _uiState.value?.copy(busy = true, moduleMessage = "Preparando motor vcplax..."),
+                _uiState.value?.copy(busy = true, moduleMessage = "Preparando motor 12–16..."),
             )
             val result = withContext(Dispatchers.IO) {
-                runCatching { VcplaxEngine.ensureRunning(getApplication()) }
-                    .getOrElse { VcplaxEngine.Result.Failed(it.message ?: "erro") }
+                runCatching { UniversalEngine.ensureRunning(getApplication()) }
+                    .getOrElse { UniversalEngine.Result.Failed(it.message ?: "erro") }
             }
             when (result) {
-                is VcplaxEngine.Result.Ok -> {
+                is UniversalEngine.Result.Ok -> {
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
                             needsReboot = false,
-                            moduleMessage = "Motor vcplax pronto (APK + root, sem modulo)",
+                            moduleMessage = "Motor OK: ${UniversalEngine.statusLine(getApplication())}",
                         ),
                     )
                     runCatching { controller.refreshModuleStatus() }
                 }
-                is VcplaxEngine.Result.Failed -> {
+                is UniversalEngine.Result.Failed -> {
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
@@ -105,8 +104,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun warmKingEngine() = warmVcplax()
-    fun ensureEmbeddedModule() = warmVcplax()
+    fun warmVcplax() = warmEngine()
+    fun warmKingEngine() = warmEngine()
+    fun ensureEmbeddedModule() = warmEngine()
 
     fun clearNeedsReboot() {
         _uiState.postValue(_uiState.value?.copy(needsReboot = false))
@@ -137,9 +137,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.postValue(_uiState.value?.copy(busy = true, needsReboot = false))
             if (enable) {
                 val boot = withContext(Dispatchers.IO) {
-                    VcplaxEngine.ensureRunning(getApplication())
+                    UniversalEngine.ensureRunning(getApplication())
                 }
-                if (boot is VcplaxEngine.Result.Failed) {
+                if (boot is UniversalEngine.Result.Failed) {
                     _uiState.postValue(_uiState.value?.copy(busy = false))
                     toast("Root/motor: ${boot.reason}")
                     return@launch

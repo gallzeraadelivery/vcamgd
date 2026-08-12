@@ -12,8 +12,8 @@ android {
         // Android 12 (API 31) ate 16 (API 36)
         minSdk = 31
         targetSdk = 36
-        versionCode = 18
-        versionName = "0.9.5"
+        versionCode = 19
+        versionName = "0.10.0"
     }
 
     // Sideload/root: release assinado com debug keystore (igual releases 0.9.x).

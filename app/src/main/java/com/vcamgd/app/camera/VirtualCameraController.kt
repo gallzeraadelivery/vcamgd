@@ -29,23 +29,27 @@ data class VirtualCameraStatus(
 )
 
 /**
- * Controller primario: motor vcplax (APK + root + inject nativo).
- * Sem Magisk module / sem reboot.
+ * Controller: [UniversalEngine] — Android 12–16, APK+root (vcplax) sem reboot.
  */
 class VirtualCameraController(private val context: Context) {
     private val _status = MutableStateFlow(VirtualCameraStatus())
     val status: StateFlow<VirtualCameraStatus> = _status.asStateFlow()
 
+    init {
+        UniversalEngine.bindContext(context)
+    }
+
     suspend fun refreshModuleStatus() {
-        val alive = withContext(Dispatchers.IO) { VcplaxEngine.isAlive(context) }
+        val alive = withContext(Dispatchers.IO) { UniversalEngine.isAlive(context) }
+        val line = withContext(Dispatchers.IO) { UniversalEngine.statusLine(context) }
         _status.value = _status.value.copy(
             moduleInstalled = alive,
-            zygiskEvent = if (alive) "vcplax binder OK" else "vcplax parado",
+            zygiskEvent = line,
             message = when {
                 alive && _status.value.state == VirtualCameraState.ENABLED ->
-                    "Virtual ativa (vcplax)"
-                alive -> "Motor vcplax pronto"
-                else -> "Motor parado — ative a virtual (APK + root)"
+                    "Virtual ativa (${UniversalEngine.lastDiag.engine})"
+                alive -> "Motor pronto (${UniversalEngine.lastDiag.engine})"
+                else -> "Motor parado — root + ative a virtual (Android 12–16)"
             },
         )
     }
@@ -57,12 +61,12 @@ class VirtualCameraController(private val context: Context) {
     ): Result<Unit> {
         _status.value = _status.value.copy(
             state = VirtualCameraState.ENABLING,
-            message = "Iniciando motor vcplax...",
+            message = "Iniciando motor universal (12–16)...",
         )
         delay(50)
 
-        val boot = withContext(Dispatchers.IO) { VcplaxEngine.ensureRunning(context) }
-        if (boot is VcplaxEngine.Result.Failed) {
+        val boot = withContext(Dispatchers.IO) { UniversalEngine.ensureRunning(context) }
+        if (boot is UniversalEngine.Result.Failed) {
             fail(boot.reason)
             return Result.failure(IllegalStateException(boot.reason))
         }
@@ -94,7 +98,6 @@ class VirtualCameraController(private val context: Context) {
             }
         }
 
-        // Espelho IPC legado so para status/UI
         withContext(Dispatchers.IO) {
             runCatching {
                 when (sourceType) {
@@ -107,31 +110,27 @@ class VirtualCameraController(private val context: Context) {
             }
         }
 
-        val code = withContext(Dispatchers.IO) {
-            VcplaxEngine.startPlay(playTarget, loop = true, autoRotate = false)
+        val play = withContext(Dispatchers.IO) { UniversalEngine.startPlay(playTarget) }
+        if (play is UniversalEngine.Result.Failed) {
+            fail(play.reason)
+            return Result.failure(IllegalStateException(play.reason))
         }
-        Log.i("KingVCam", "vcplax startPlay code=$code path=$playTarget")
 
-        // Referencia: code==0 => falhou; !=0 = OK
-        return if (code != 0) {
-            withContext(Dispatchers.IO) { NativeBridge.restartCameraApps() }
-            _status.value = VirtualCameraStatus(
-                state = VirtualCameraState.ENABLED,
-                message = "Virtual ON (vcplax). Abra a camera.",
-                usingRealCamera = false,
-                moduleInstalled = true,
-                zygiskEvent = "startPlay=$code",
-            )
-            Result.success(Unit)
-        } else {
-            fail("Motor recusou play (code=0)")
-            Result.failure(IllegalStateException("startPlay=0"))
-        }
+        withContext(Dispatchers.IO) { NativeBridge.restartCameraApps() }
+        _status.value = VirtualCameraStatus(
+            state = VirtualCameraState.ENABLED,
+            message = "Virtual ON. Abra a camera (Android ${android.os.Build.VERSION.RELEASE}).",
+            usingRealCamera = false,
+            moduleInstalled = true,
+            zygiskEvent = UniversalEngine.statusLine(context),
+        )
+        Log.i("KingVCam", "enable OK target=$playTarget diag=${UniversalEngine.lastDiag}")
+        return Result.success(Unit)
     }
 
     suspend fun disable(): Result<Unit> {
         withContext(Dispatchers.IO) {
-            VcplaxEngine.stopPlay()
+            UniversalEngine.stopPlay()
             runCatching { NativeBridge.disable(context) }
             NativeBridge.restartCameraApps()
         }
@@ -139,14 +138,14 @@ class VirtualCameraController(private val context: Context) {
             state = VirtualCameraState.DISABLED,
             message = "Virtual OFF — camera real",
             usingRealCamera = true,
-            moduleInstalled = VcplaxEngine.isAlive(context),
+            moduleInstalled = UniversalEngine.isAlive(context),
             zygiskEvent = "stopped",
         )
         return Result.success(Unit)
     }
 
     fun switchToRealCamera() {
-        VcplaxEngine.stopPlay()
+        UniversalEngine.stopPlay()
         runCatching { NativeBridge.switchToReal(context) }
         _status.value = _status.value.copy(
             usingRealCamera = true,
@@ -161,9 +160,7 @@ class VirtualCameraController(private val context: Context) {
         val path = prefs.getString("uri", null)?.takeIf { it.startsWith("/") }
             ?: prefs.getString("url", null)
             ?: "/data/local/tmp/vcamgd/current.mp4"
-        if (path.isNotBlank()) {
-            VcplaxEngine.startPlay(path, loop = true, autoRotate = false)
-        }
+        UniversalEngine.startPlay(path)
         _status.value = _status.value.copy(
             usingRealCamera = false,
             message = "Modo VIRTUAL",
@@ -184,7 +181,8 @@ class VirtualCameraController(private val context: Context) {
                     "cp '$dest' /data/adb/vcamgd/current.mp4 2>/dev/null; " +
                     "chmod 777 /data/local/tmp/vcamgd; chmod 666 '$dest'; " +
                     "chcon u:object_r:magisk_file:s0 '$dest' 2>/dev/null; " +
-                    "ls -l '$dest'; echo OK",
+                    "chcon u:object_r:system_data_file:s0 '$dest' 2>/dev/null; " +
+                    "ls -lZ '$dest'; echo OK",
                 timeoutSec = 10,
             )
             if (out.contains("OK")) dest else null

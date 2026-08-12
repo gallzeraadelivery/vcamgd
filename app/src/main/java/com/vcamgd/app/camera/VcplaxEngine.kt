@@ -2,6 +2,7 @@ package com.vcamgd.app.camera
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
 import android.os.IBinder
 import android.os.Parcel
 import android.util.Log
@@ -164,17 +165,30 @@ object VcplaxEngine {
 
     private fun deployAndStart(context: Context, abi: String, server: String) {
         val base = File(context.filesDir, "vcam-engine/$abi").absolutePath
+        val sdk = Build.VERSION.SDK_INT
+        // Labels estilo inject moderno: system_lib_file + exec no /data
         val out = RootShell.run(
-            "killall vcplax 2>/dev/null; " +
+            "mkdir -p /data/local/tmp/vcamgd; " +
+                "killall vcplax 2>/dev/null; " +
                 "chattr -i /data/camera 2>/dev/null; rm -rf /data/camera /data/samera 2>/dev/null; " +
                 "cp '$base/libvc.so' /data/libvc.so; " +
                 "cp '$base/libshadowhook.so' /data/libvc++.so; " +
                 "cp '$base/vcplax.so' /data/vcplax; " +
                 "chmod 700 /data/vcplax; " +
                 "chmod 755 /data/libvc.so /data/libvc++.so; " +
+                "chcon u:object_r:system_lib_file:s0 /data/vcplax /data/libvc.so /data/libvc++.so 2>/dev/null; " +
+                "chcon u:object_r:system_file:s0 /data/vcplax 2>/dev/null; " +
+                // Android 14+: tambem espelha em tmp com magisk_file
+                "cp /data/libvc.so /data/local/tmp/vcamgd/libvc.so; " +
+                "cp /data/libvc++.so /data/local/tmp/vcamgd/libvc++.so; " +
+                "cp /data/vcplax /data/local/tmp/vcamgd/vcplax; " +
+                "chmod 755 /data/local/tmp/vcamgd/libvc.so /data/local/tmp/vcamgd/libvc++.so; " +
+                "chmod 700 /data/local/tmp/vcamgd/vcplax; " +
+                "chcon u:object_r:magisk_file:s0 /data/local/tmp/vcamgd /data/local/tmp/vcamgd/* 2>/dev/null; " +
+                "echo SDK=$sdk; " +
                 "setsid /data/vcplax $server >>/data/local/tmp/vcamgd/vcplax.log 2>&1 < /dev/null & " +
-                "sleep 0.2; pidof vcplax; echo OK",
-            timeoutSec = 12,
+                "sleep 0.35; pidof vcplax; ls -lZ /data/vcplax /data/libvc.so 2>&1 | head -5; echo OK",
+            timeoutSec = 14,
         )
         Log.i(TAG, "deploy: $out")
     }
