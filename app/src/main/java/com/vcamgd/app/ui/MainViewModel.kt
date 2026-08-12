@@ -53,14 +53,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         refresh()
-        warmKingEngine()
+        // Nao sobe kingvd/su automaticamente no init — evita crash/ANR na abertura.
+        // O motor sobe ao ativar a virtual ou ao tocar em Atualizar/Status.
     }
 
     fun refresh() {
         viewModelScope.launch {
-            val root = RootChecker.check()
-            controller.refreshModuleStatus()
-            _uiState.postValue(_uiState.value?.copy(root = root, message = null))
+            runCatching {
+                val root = withContext(Dispatchers.IO) { RootChecker.check() }
+                controller.refreshModuleStatus()
+                _uiState.postValue(_uiState.value?.copy(root = root, message = null))
+            }.onFailure {
+                _uiState.postValue(
+                    _uiState.value?.copy(
+                        message = "Falha ao atualizar: ${it.message}",
+                    ),
+                )
+            }
         }
     }
 
@@ -69,7 +78,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _uiState.postValue(_uiState.value?.copy(busy = true, moduleMessage = "Preparando KingEngine..."))
             val result = withContext(Dispatchers.IO) {
-                KingEngine.ensureRunning(getApplication())
+                runCatching { KingEngine.ensureRunning(getApplication()) }
+                    .getOrElse { KingEngine.Result.Failed(it.message ?: "erro") }
             }
             when (result) {
                 is KingEngine.Result.Ok -> {
@@ -80,7 +90,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             moduleMessage = "KingEngine pronto (kingvd + Zygisk soft)",
                         ),
                     )
-                    controller.refreshModuleStatus()
+                    runCatching { controller.refreshModuleStatus() }
                 }
                 is KingEngine.Result.Failed -> {
                     val reboot = result.reason.startsWith("REBOOT_REQUIRED:")

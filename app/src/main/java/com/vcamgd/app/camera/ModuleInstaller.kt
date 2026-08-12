@@ -2,9 +2,7 @@ package com.vcamgd.app.camera
 
 import android.content.Context
 import android.util.Log
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 import java.util.zip.ZipInputStream
 
 /**
@@ -164,16 +162,6 @@ object ModuleInstaller {
         return out.ifBlank { null }
     }
 
-    private fun shellSu(command: String): String {
-        return try {
-            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-            val stdout = BufferedReader(InputStreamReader(process.inputStream)).readText()
-            val stderr = BufferedReader(InputStreamReader(process.errorStream)).readText()
-            process.waitFor()
-            (stdout + stderr).trim()
-        } catch (e: Exception) {
-            Log.w(TAG, "su failed: ${e.message}")
-            ""
-        }
-    }
+    private fun shellSu(command: String): String =
+        com.vcamgd.app.root.RootShell.run(command, timeoutSec = 12)
 }

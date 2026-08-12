@@ -4,9 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 
 /**
  * IPC primario: /data/local/tmp/vcamgd (legivel pelos apps / hooks Zygisk)
@@ -63,20 +61,30 @@ object NativeBridge {
     }
 
     /**
+     * Escreve mode=real no control.json sem matar cameras (seguro no arranque).
+     */
+    fun writePassthroughOnly(virtualEnabledInApp: Boolean) {
+        if (virtualEnabledInApp) return
+        runCatching {
+            writeControl(
+                enabled = false,
+                virtual = false,
+                mode = "real",
+                source = "",
+                uri = "",
+                url = "",
+            )
+        }
+    }
+
+    /**
      * Garante pass-through (zero hooks) no arranque se a virtual nao estiver ativa no app.
      * Recupera devices em que control.json ficou preso em mode=virtual.
      */
     fun syncPassthroughUnlessVirtualEnabled(virtualEnabledInApp: Boolean) {
+        writePassthroughOnly(virtualEnabledInApp)
         if (virtualEnabledInApp) return
-        writeControl(
-            enabled = false,
-            virtual = false,
-            mode = "real",
-            source = "",
-            uri = "",
-            url = "",
-        )
-        restartCameraApps()
+        // So reinicia cameras quando o usuario desliga de proposito — nao no boot do app
     }
 
     fun setLocalVideoSource(context: Context, uri: Uri): Boolean {
@@ -304,16 +312,6 @@ object NativeBridge {
         return out.ifBlank { null }
     }
 
-    private fun shellSu(command: String): String {
-        return try {
-            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-            val stdout = BufferedReader(InputStreamReader(process.inputStream)).readText()
-            val stderr = BufferedReader(InputStreamReader(process.errorStream)).readText()
-            process.waitFor()
-            (stdout + stderr).trim()
-        } catch (e: Exception) {
-            Log.w(TAG, "su failed: ${e.message}")
-            ""
-        }
-    }
+    private fun shellSu(command: String): String =
+        com.vcamgd.app.root.RootShell.run(command, timeoutSec = 8)
 }

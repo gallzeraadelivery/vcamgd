@@ -3,12 +3,10 @@ package com.vcamgd.app.camera
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import com.vcamgd.app.root.RootShell
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.DataOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStreamReader
 import java.util.zip.ZipFile
 
 /**
@@ -35,7 +33,7 @@ object KingEngine {
 
     fun ensureRunning(context: Context): Result {
         return try {
-            if (!hasRoot()) return Result.Failed("Root (su) necessario")
+            if (!RootShell.hasRoot()) return Result.Failed("Root (su) necessario")
 
             when (val mod = ModuleInstaller.ensureInstalled(context)) {
                 is ModuleInstaller.Result.Failed ->
@@ -47,10 +45,11 @@ object KingEngine {
 
             extractAndDeploy(context)
             if (!waitAlive(timeoutMs = 4000)) {
-                val diag = su(
+                val diag = RootShell.run(
                     "echo PID=\$(pidof kingvd 2>/dev/null); " +
                         "ls -la $BIN $SOCK $LOG 2>&1; " +
                         "tail -n 20 $LOG 2>/dev/null",
+                    timeoutSec = 5,
                 )
                 Log.e(TAG, "kingvd not alive: $diag")
                 return Result.Failed(
@@ -59,7 +58,7 @@ object KingEngine {
                 )
             }
             writeControl(enabled = false, virtual = false, mode = "real", source = "", uri = "", url = "")
-            Log.i(TAG, "kingvd ready pid=${su("pidof kingvd")}")
+            Log.i(TAG, "kingvd ready pid=${RootShell.run("pidof kingvd")}")
             Result.Ok
         } catch (t: Throwable) {
             Log.e(TAG, "ensureRunning", t)
@@ -68,8 +67,8 @@ object KingEngine {
     }
 
     fun isAlive(): Boolean {
-        if (!hasRoot()) return false
-        val pid = su("pidof kingvd 2>/dev/null").trim()
+        if (!RootShell.hasRoot(timeoutSec = 3)) return false
+        val pid = RootShell.run("pidof kingvd 2>/dev/null", timeoutSec = 3).trim()
         return pid.isNotEmpty()
     }
 
@@ -89,7 +88,7 @@ object KingEngine {
             url = if (network) path else "",
         )
         // marca status para UI
-        su(
+        RootShell.run(
             "printf '%s' '{\"engine\":\"kingvd\",\"feeder\":\"playing\",\"ts\":'\"\$(date +%s)\"'}' > $STATUS; " +
                 "chmod 666 $STATUS 2>/dev/null",
         )
@@ -133,23 +132,24 @@ object KingEngine {
     }
 
     fun statusLine(): String {
-        val pid = su("pidof kingvd 2>/dev/null").trim().ifBlank { "-" }
-        val st = su("cat $STATUS 2>/dev/null").trim().ifBlank { "{}" }
+        val pid = RootShell.run("pidof kingvd 2>/dev/null", timeoutSec = 3).trim().ifBlank { "-" }
+        val st = RootShell.run("cat $STATUS 2>/dev/null", timeoutSec = 3).trim().ifBlank { "{}" }
         return "pid=$pid $st"
     }
 
     fun shutdown() {
         stopPlay()
-        su("killall kingvd 2>/dev/null; rm -f $SOCK")
+        RootShell.run("killall kingvd 2>/dev/null; rm -f $SOCK")
     }
 
     private fun ensureDaemonOrRestart(): Boolean {
         if (isAlive()) return true
-        su(
+        RootShell.run(
             "mkdir -p $DIR /data/adb/vcamgd; " +
                 "chmod 755 $BIN 2>/dev/null; " +
                 "killall kingvd 2>/dev/null; rm -f $SOCK; " +
                 "setsid $BIN >>$LOG 2>&1 < /dev/null &",
+            timeoutSec = 6,
         )
         return waitAlive(timeoutMs = 3000)
     }
@@ -182,8 +182,7 @@ object KingEngine {
         }
         outBin.setExecutable(true, false)
 
-        // Deploy + start sob root (setsid evita morrer com o shell su)
-        val deploy = su(
+        val deploy = RootShell.run(
             "mkdir -p $DIR /data/adb/vcamgd; " +
                 "killall kingvd 2>/dev/null; rm -f $SOCK; " +
                 "cp '${outBin.absolutePath}' $BIN; chmod 755 $BIN; " +
@@ -193,6 +192,7 @@ object KingEngine {
                 "pidof kingvd; " +
                 "ls -la $BIN $SOCK 2>&1; " +
                 "tail -n 5 $LOG 2>/dev/null",
+            timeoutSec = 10,
         )
         Log.i(TAG, "deploy:\n$deploy")
     }
@@ -207,9 +207,6 @@ object KingEngine {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (isAlive()) return true
-            // status.json "listening" tambem conta se o binario morreu apos escrever
-            val st = su("cat $STATUS 2>/dev/null")
-            if (st.contains("listening") && su("pidof kingvd").isNotBlank()) return true
             Thread.sleep(200)
         }
         return isAlive()
@@ -233,52 +230,16 @@ object KingEngine {
             .put("url", url)
             .put("engine", "kingvd")
             .toString()
-        // Escape for single-quoted shell: end quote, escape, reopen
         val escaped = json.replace("'", "'\\''")
-        val out = su(
+        val out = RootShell.run(
             "mkdir -p $DIR /data/adb/vcamgd; " +
                 "printf '%s' '$escaped' > $CONTROL; chmod 666 $CONTROL; " +
                 "printf '%s' '$escaped' > $ADB_CONTROL; chmod 666 $ADB_CONTROL; " +
                 "cat $CONTROL",
+            timeoutSec = 6,
         )
         val ok = out.contains("\"engine\"") || out.contains("enabled")
         if (!ok) Log.w(TAG, "writeControl failed: $out")
         return ok
-    }
-
-    private fun hasRoot(): Boolean = su("id").contains("uid=0")
-
-    private val suLock = Any()
-    @Volatile private var suProcess: Process? = null
-    @Volatile private var suOut: DataOutputStream? = null
-
-    private fun su(command: String): String {
-        synchronized(suLock) {
-            return try {
-                if (suProcess == null || suOut == null) {
-                    val p = Runtime.getRuntime().exec("su")
-                    suProcess = p
-                    suOut = DataOutputStream(p.outputStream)
-                }
-                val mark = "EOF_${System.currentTimeMillis()}"
-                val out = suOut!!
-                out.writeBytes("$command\n")
-                out.writeBytes("echo $mark\n")
-                out.flush()
-                val reader = BufferedReader(InputStreamReader(suProcess!!.inputStream))
-                val sb = StringBuilder()
-                while (true) {
-                    val line = reader.readLine() ?: break
-                    if (line == mark) break
-                    sb.append(line).append('\n')
-                }
-                sb.toString().trim()
-            } catch (e: Exception) {
-                Log.w(TAG, "su failed: ${e.message}")
-                suProcess = null
-                suOut = null
-                ""
-            }
-        }
     }
 }
