@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
@@ -135,29 +136,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleVirtualCamera(enable: Boolean) {
         viewModelScope.launch {
             _uiState.postValue(_uiState.value?.copy(busy = true, needsReboot = false))
-            if (enable) {
-                val boot = withContext(Dispatchers.IO) {
-                    UniversalEngine.ensureRunning(getApplication())
+            runCatching {
+                if (enable) {
+                    val boot = withContext(Dispatchers.IO) {
+                        UniversalEngine.ensureRunning(getApplication())
+                    }
+                    if (boot is UniversalEngine.Result.Failed) {
+                        _uiState.postValue(_uiState.value?.copy(busy = false))
+                        toast("Root/motor: ${boot.reason}")
+                        return@launch
+                    }
                 }
-                if (boot is UniversalEngine.Result.Failed) {
-                    _uiState.postValue(_uiState.value?.copy(busy = false))
-                    toast("Root/motor: ${boot.reason}")
-                    return@launch
+                val prefs = _uiState.value?.prefs ?: AppPreferences()
+                val result = if (enable) {
+                    controller.enable(
+                        sourceType = prefs.sourceType,
+                        localUri = prefs.localVideoUri?.let(Uri::parse),
+                        networkUrl = prefs.networkUrl,
+                    )
+                } else {
+                    controller.disable()
                 }
+                settings.setVirtualCameraEnabled(result.isSuccess && enable)
+                _uiState.postValue(_uiState.value?.copy(busy = false, needsReboot = false))
+                toast(result.exceptionOrNull()?.message ?: if (enable) "Virtual solicitada" else "Desligado")
+            }.onFailure { t ->
+                Log.e("KingVCam", "toggleVirtualCamera", t)
+                _uiState.postValue(_uiState.value?.copy(busy = false))
+                toast("Erro: ${t.message ?: "falha"}")
             }
-            val prefs = _uiState.value?.prefs ?: AppPreferences()
-            val result = if (enable) {
-                controller.enable(
-                    sourceType = prefs.sourceType,
-                    localUri = prefs.localVideoUri?.let(Uri::parse),
-                    networkUrl = prefs.networkUrl,
-                )
-            } else {
-                controller.disable()
-            }
-            settings.setVirtualCameraEnabled(result.isSuccess && enable)
-            _uiState.postValue(_uiState.value?.copy(busy = false, needsReboot = false))
-            toast(result.exceptionOrNull()?.message ?: if (enable) "Virtual solicitada" else "Desligado")
         }
     }
 
@@ -184,8 +191,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { settings.setOverlayEnabled(enabled) }
     }
 
-    fun switchReal() = controller.switchToRealCamera()
-    fun switchVirtual() = controller.switchToVirtualCamera()
+    fun switchReal() {
+        viewModelScope.launch {
+            runCatching { controller.switchToRealCamera() }
+                .onFailure { toast("Erro REAL: ${it.message}") }
+        }
+    }
+
+    fun switchVirtual() {
+        viewModelScope.launch {
+            runCatching { controller.switchToVirtualCamera() }
+                .onFailure { toast("Erro VIRTUAL: ${it.message}") }
+        }
+    }
 
     private fun toast(message: String) {
         Toast.makeText(getApplication(), message, Toast.LENGTH_SHORT).show()

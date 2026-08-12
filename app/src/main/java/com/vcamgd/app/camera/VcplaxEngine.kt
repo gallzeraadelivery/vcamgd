@@ -97,21 +97,31 @@ object VcplaxEngine {
      */
     fun startPlay(pathOrUrl: String, loop: Boolean = true, autoRotate: Boolean = false): Int {
         val b = binder ?: return -1
-        return transactInt(b, 11) { data ->
-            data.writeString(pathOrUrl)
-            data.writeInt(if (autoRotate) 1 else 0)
-            data.writeInt(if (loop) 1 else 0)
+        return runCatching {
+            transactInt(b, 11) { data ->
+                data.writeString(pathOrUrl)
+                data.writeInt(if (autoRotate) 1 else 0)
+                data.writeInt(if (loop) 1 else 0)
+            }
+        }.getOrElse { t ->
+            Log.w(TAG, "startPlay binder: ${t.message}")
+            binder = null
+            -1
         }
     }
 
     fun stopPlay(): Int {
         val b = binder ?: return -1
-        return transactInt(b, 12) { }
+        return runCatching { transactInt(b, 12) { } }.getOrElse { t ->
+            Log.w(TAG, "stopPlay binder: ${t.message}")
+            binder = null
+            -1
+        }
     }
 
     fun playStatus(): Int {
         val b = binder ?: return -1
-        return transactInt(b, 15) { }
+        return runCatching { transactInt(b, 15) { } }.getOrElse { -1 }
     }
 
     fun shutdown() {

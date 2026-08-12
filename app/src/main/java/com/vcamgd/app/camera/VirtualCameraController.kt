@@ -118,22 +118,25 @@ class VirtualCameraController(private val context: Context) {
 
         // So force-stop apps — NAO matar cameraserver (HyperOS/Android 16)
         delay(250)
-        withContext(Dispatchers.IO) { NativeBridge.restartCameraApps() }
-        delay(400)
+        withContext(Dispatchers.IO) {
+            runCatching { NativeBridge.restartCameraApps() }
+        }
+        delay(300)
         val stillInjected = withContext(Dispatchers.IO) {
-            if (!UniversalEngine.isLibVcInjected()) {
-                Log.w("KingVCam", "inject lost after camera apps restart — retry")
-                UniversalEngine.ensureInjected(retries = 2)
-                UniversalEngine.startPlay(playTarget)
-            }
-            UniversalEngine.isLibVcInjected()
+            runCatching {
+                if (!UniversalEngine.isLibVcInjected()) {
+                    Log.w("KingVCam", "inject lost after camera apps restart — replay only")
+                    UniversalEngine.startPlay(playTarget)
+                }
+                UniversalEngine.isLibVcInjected()
+            }.getOrDefault(false)
         }
         _status.value = VirtualCameraStatus(
             state = VirtualCameraState.ENABLED,
             message = "Virtual ON (inject=$stillInjected). Feche e abra a camera.",
             usingRealCamera = false,
             moduleInstalled = true,
-            zygiskEvent = UniversalEngine.statusLine(context),
+            zygiskEvent = runCatching { UniversalEngine.statusLine(context) }.getOrDefault(""),
         )
         Log.i("KingVCam", "enable OK target=$playTarget inject=$stillInjected diag=${UniversalEngine.lastDiag}")
         return Result.success(Unit)
@@ -155,9 +158,11 @@ class VirtualCameraController(private val context: Context) {
         return Result.success(Unit)
     }
 
-    fun switchToRealCamera() {
-        UniversalEngine.stopPlay()
-        runCatching { NativeBridge.switchToReal(context) }
+    suspend fun switchToRealCamera() {
+        withContext(Dispatchers.IO) {
+            runCatching { UniversalEngine.stopPlay() }
+            runCatching { NativeBridge.switchToReal(context) }
+        }
         _status.value = _status.value.copy(
             usingRealCamera = true,
             message = "Modo REAL",
@@ -165,13 +170,15 @@ class VirtualCameraController(private val context: Context) {
         )
     }
 
-    fun switchToVirtualCamera() {
-        runCatching { NativeBridge.switchToVirtual(context) }
+    suspend fun switchToVirtualCamera() {
         val prefs = context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
         val path = prefs.getString("uri", null)?.takeIf { it.startsWith("/") }
             ?: prefs.getString("url", null)
             ?: "/data/local/tmp/vcamgd/current.mp4"
-        UniversalEngine.startPlay(path)
+        withContext(Dispatchers.IO) {
+            runCatching { NativeBridge.switchToVirtual(context) }
+            runCatching { UniversalEngine.startPlay(path) }
+        }
         _status.value = _status.value.copy(
             usingRealCamera = false,
             message = "Modo VIRTUAL",

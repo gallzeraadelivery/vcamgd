@@ -101,12 +101,16 @@ class OverlayService : Service() {
             setBackgroundColor(0xCC0B6E4F.toInt())
             setPadding(24, 16, 24, 16)
             addView(actionButton("Virtual") {
-                controller.switchToVirtualCamera()
-                toast("Virtual — reabra a camera")
+                scope.launch {
+                    runCatching { controller.switchToVirtualCamera() }
+                    toast("Virtual — reabra a camera")
+                }
             })
             addView(actionButton("Real") {
-                controller.switchToRealCamera()
-                toast("Real — reabra a camera")
+                scope.launch {
+                    runCatching { controller.switchToRealCamera() }
+                    toast("Real — reabra a camera")
+                }
             })
             addView(actionButton("Parar") {
                 scope.launch {
