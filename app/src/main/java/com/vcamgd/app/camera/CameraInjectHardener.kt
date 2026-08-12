@@ -94,6 +94,8 @@ object CameraInjectHardener {
                 "\"\$MP\" --live 'allow cameraserver tmpfs file { open read getattr map execute execute_no_trans }' >/dev/null 2>&1; " +
                 "fi; " +
                 "resetprop ro.debuggable 1 >/dev/null 2>&1; " +
+                "settings put global hidden_api_policy 1 >/dev/null 2>&1; " +
+                "settings put system miui_optimization 0 >/dev/null 2>&1; " +
                 "getenforce; " +
                 "cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; " +
                 "echo WINDOW_OK",
@@ -134,35 +136,80 @@ object CameraInjectHardener {
 
     /**
      * Redeploy das libs em caminhos legiveis pelo cameraserver + relabel.
-     * HyperOS as vezes bloqueia /data/libvc.so; magisk_file em /data/adb ajuda.
+     * HyperOS: /dev/vcam + bind em /system/lib64 (linker rejeita /data as vezes).
      */
     fun redeployLibPaths(filesDirEngine: String): String {
         val out = RootShell.run(
             "setenforce 0; " +
-                "mkdir -p /data/adb/vcamgd /data/local/tmp/vcamgd; " +
-                "for f in libvc.so libvc++.so vcplax; do " +
-                "if [ -f /data/\$f ]; then " +
-                "cp -f /data/\$f /data/adb/vcamgd/\$f 2>/dev/null; " +
-                "cp -f /data/\$f /data/local/tmp/vcamgd/\$f 2>/dev/null; " +
-                "fi; done; " +
+                "mkdir -p /data/adb/vcamgd /data/local/tmp/vcamgd /dev/vcam; " +
                 "if [ -d '$filesDirEngine' ]; then " +
                 "cp -f '$filesDirEngine/libvc.so' /data/libvc.so 2>/dev/null; " +
                 "cp -f '$filesDirEngine/libshadowhook.so' /data/libvc++.so 2>/dev/null; " +
                 "cp -f '$filesDirEngine/vcplax.so' /data/vcplax 2>/dev/null; " +
-                "cp -f /data/libvc.so /data/adb/vcamgd/libvc.so; " +
-                "cp -f /data/libvc++.so /data/adb/vcamgd/libvc++.so; " +
-                "cp -f /data/vcplax /data/adb/vcamgd/vcplax; " +
+                "cp -f '$filesDirEngine/kinginject' /data/local/tmp/vcamgd/kinginject 2>/dev/null; " +
+                "cp -f '$filesDirEngine/kinginject' /data/adb/vcamgd/kinginject 2>/dev/null; " +
                 "fi; " +
-                "chmod 755 /data/libvc.so /data/libvc++.so /data/adb/vcamgd/libvc.so /data/adb/vcamgd/libvc++.so 2>/dev/null; " +
-                "chmod 700 /data/vcplax /data/adb/vcamgd/vcplax 2>/dev/null; " +
-                "chcon u:object_r:system_lib_file:s0 /data/libvc.so /data/libvc++.so /data/vcplax 2>/dev/null; " +
+                "cp -f /data/libvc.so /data/adb/vcamgd/libvc.so 2>/dev/null; " +
+                "cp -f /data/libvc++.so /data/adb/vcamgd/libvc++.so 2>/dev/null; " +
+                "cp -f /data/vcplax /data/adb/vcamgd/vcplax 2>/dev/null; " +
+                "cp -f /data/libvc.so /dev/vcam/libvc.so; " +
+                "cp -f /data/libvc++.so /dev/vcam/libvc++.so; " +
+                "chmod 755 /data/libvc.so /data/libvc++.so /dev/vcam /dev/vcam/libvc.so /dev/vcam/libvc++.so 2>/dev/null; " +
+                "chmod 700 /data/vcplax /data/local/tmp/vcamgd/kinginject /data/adb/vcamgd/kinginject 2>/dev/null; " +
+                "chcon u:object_r:system_lib_file:s0 /data/libvc.so /data/libvc++.so /dev/vcam/libvc.so /dev/vcam/libvc++.so 2>/dev/null; " +
+                "chcon u:object_r:system_file:s0 /data/vcplax /data/local/tmp/vcamgd/kinginject 2>/dev/null; " +
                 "chcon u:object_r:magisk_file:s0 /data/adb/vcamgd /data/adb/vcamgd/* 2>/dev/null; " +
-                "chcon u:object_r:system_file:s0 /data/vcplax 2>/dev/null; " +
-                "ls -lZ /data/libvc.so /data/vcplax /data/adb/vcamgd/libvc.so 2>&1 | head -8; " +
+                // bind live em /system/lib64 (ns do init) — sem reboot
+                "LIBDIR=/system/lib64; " +
+                "if [ ! -d \$LIBDIR ]; then LIBDIR=/system/lib; fi; " +
+                "if [ -d \$LIBDIR ]; then " +
+                "cp -f /dev/vcam/libvc.so \$LIBDIR/libvc.so 2>/dev/null || " +
+                "mount -o bind /dev/vcam/libvc.so \$LIBDIR/libvc.so 2>/dev/null; " +
+                "cp -f /dev/vcam/libvc++.so \$LIBDIR/libvc++.so 2>/dev/null || " +
+                "mount -o bind /dev/vcam/libvc++.so \$LIBDIR/libvc++.so 2>/dev/null; " +
+                "nsenter -t 1 -m -- sh -c '" +
+                "cp -f /dev/vcam/libvc.so /system/lib64/libvc.so 2>/dev/null; " +
+                "cp -f /dev/vcam/libvc++.so /system/lib64/libvc++.so 2>/dev/null; " +
+                "true' 2>/dev/null; " +
+                "fi; " +
+                "ls -lZ /data/libvc.so /dev/vcam/libvc.so /system/lib64/libvc.so 2>&1 | head -8; " +
                 "echo REDEPLOY_OK",
-            timeoutSec = 12,
+            timeoutSec = 14,
         )
-        Log.i(TAG, "redeploy: ${out.take(200)}")
+        Log.i(TAG, "redeploy: ${out.take(280)}")
+        return out
+    }
+
+    /**
+     * Injector proprio (kinginject) — fallback quando vcplax nao gruda no HyperOS.
+     * Tenta varios caminhos de lib.
+     */
+    fun runKingInject(): String {
+        val out = RootShell.run(
+            "setenforce 0; " +
+                "echo 0 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; " +
+                "KI=; " +
+                "for p in /data/local/tmp/vcamgd/kinginject /data/adb/vcamgd/kinginject; do " +
+                "[ -x \$p ] && KI=\$p; done; " +
+                "if [ -z \"\$KI\" ]; then echo NO_KINGINJECT; exit 0; fi; " +
+                "PID=\$(pidof cameraserver | awk '{print \$1}'); " +
+                "echo CAM=\$PID KI=\$KI; " +
+                "if [ -z \"\$PID\" ]; then echo NO_CAM; exit 0; fi; " +
+                "for lib in /dev/vcam/libvc.so /system/lib64/libvc.so /data/libvc.so /data/adb/vcamgd/libvc.so; do " +
+                "if [ -f \$lib ]; then " +
+                "echo TRY=\$lib; " +
+                "\"\$KI\" --pid \$PID --lib \$lib >>/data/local/tmp/vcamgd/kinginject.log 2>&1; " +
+                "echo RC=\$?; " +
+                "cat /proc/\$PID/maps 2>/dev/null | grep -E 'libvc|shadowhook|vcam' | head -5; " +
+                "fi; done; " +
+                // shadowhook / libvc++
+                "for lib in /dev/vcam/libvc++.so /system/lib64/libvc++.so /data/libvc++.so; do " +
+                "if [ -f \$lib ]; then \"\$KI\" --pid \$PID --lib \$lib >>/data/local/tmp/vcamgd/kinginject.log 2>&1; fi; " +
+                "done; " +
+                "echo KING_DONE",
+            timeoutSec = 20,
+        )
+        Log.i(TAG, "runKingInject: ${out.take(400)}")
         return out
     }
 
@@ -177,9 +224,11 @@ object CameraInjectHardener {
                 "PID=\$(pidof cameraserver 2>/dev/null | awk '{print \$1}'); " +
                 "if [ -n \"\$PID\" ]; then " +
                 "echo context=\$(cat /proc/\$PID/attr/current 2>/dev/null); " +
-                "cat /proc/\$PID/maps 2>/dev/null | grep -E 'libvc|shadow|vcplax' | head -5; " +
-                "fi",
-            timeoutSec = 8,
+                "cat /proc/\$PID/maps 2>/dev/null | grep -E 'libvc|shadow|vcplax|vcam' | head -8; " +
+                "fi; " +
+                "tail -n 15 /data/local/tmp/vcamgd/kinginject.log 2>/dev/null; " +
+                "tail -n 10 /data/local/tmp/vcamgd/vcplax.log 2>/dev/null",
+            timeoutSec = 10,
         )
     }
 }

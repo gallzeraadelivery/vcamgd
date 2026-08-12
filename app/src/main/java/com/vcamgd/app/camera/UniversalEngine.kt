@@ -11,8 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
- * v0.10.4: estabiliza crash — nao mata HAL no boot, binder com try/catch,
- * watchdog so re-play (sem bounce agressivo).
+ * v0.10.5: kinginject fallback + libs em /dev e bind /system (HyperOS).
+ * v0.10.4: estabiliza crash — nao mata HAL no boot, binder com try/catch.
  */
 object UniversalEngine {
     private const val TAG = "KingVCam-Universal"
@@ -106,9 +106,13 @@ object UniversalEngine {
             if (!ensureInjected(retries = retries)) {
                 lastDiag = lastDiag.copy(detail = lastDiag.detail + " inject_fail")
                 stopWatchdog()
+                val snap = runCatching {
+                    CameraInjectHardener.snapshotDiag().lineSequence().take(6).joinToString(" | ")
+                }.getOrDefault("")
                 return Result.Failed(
-                    "Inject no cameraserver falhou (libvc ausente nas maps). " +
-                        "HyperOS pode estar bloqueando ptrace — root permanente.",
+                    "Inject falhou (libvc nao entrou no cameraserver). " +
+                        "HyperOS bloqueia ptrace/dlopen. Root permanente + Magisk/KSU. " +
+                        "Diag: $snap",
                 )
             }
 
@@ -201,10 +205,14 @@ object UniversalEngine {
                     500L
                 }
                 Thread.sleep(settleMs)
+
+                // 1) deixa o vcplax tentar sozinho apos bounce
                 if (isLibVcInjected()) {
-                    Log.i(TAG, "libvc injected attempt=${attempt + 1}")
+                    Log.i(TAG, "libvc injected (vcplax) attempt=${attempt + 1}")
                     return true
                 }
+
+                // 2) reinicia daemon + redeploy /dev
                 Log.w(TAG, "libvc NOT in maps — restarting vcplax attempt=${attempt + 1}")
                 val ctx = appContext
                 if (ctx != null) {
@@ -216,24 +224,28 @@ object UniversalEngine {
                     VcplaxEngine.ensureRunning(ctx, restoreEnforcing = false)
                     Thread.sleep(600)
                     if (isLibVcInjected()) return true
-                    if (attempt >= 1) {
-                        VcplaxEngine.restartFromAdbPath(ctx)
-                        Thread.sleep(700)
-                    }
                 }
-                if (isLibVcInjected()) return true
+
+                // 3) fallback: kinginject (ptrace dlopen proprio)
+                val ki = CameraInjectHardener.runKingInject()
+                Log.i(TAG, "kinginject attempt=${attempt + 1}: ${ki.take(120)}")
+                Thread.sleep(300)
+                if (isLibVcInjected()) {
+                    Log.i(TAG, "libvc injected (kinginject) attempt=${attempt + 1}")
+                    return true
+                }
+
+                if (attempt >= 1 && ctx != null) {
+                    VcplaxEngine.restartFromAdbPath(ctx)
+                    Thread.sleep(500)
+                    CameraInjectHardener.runKingInject()
+                    if (isLibVcInjected()) return true
+                }
             }
-            val maps = RootShell.run(
-                "PID=\$(pidof cameraserver | awk '{print \$1}'); " +
-                    "echo PID=\$PID; " +
-                    "cat /proc/\$PID/maps 2>/dev/null | grep -E 'libvc|shadow|vcplax' | head -8; " +
-                    "getenforce; cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; " +
-                    "tail -n 20 $VCPLAX_LOG 2>/dev/null",
-                timeoutSec = 8,
-            )
-            Log.e(TAG, "inject diagnostics:\n$maps")
+            val diag = CameraInjectHardener.snapshotDiag()
+            Log.e(TAG, "inject diagnostics:\n$diag")
             lastDiag = lastDiag.copy(
-                detail = "maps=${maps.lineSequence().take(3).joinToString(" | ")}",
+                detail = "maps=${diag.lineSequence().take(5).joinToString(" | ")}",
             )
             isLibVcInjected()
         } catch (t: Throwable) {
@@ -247,11 +259,13 @@ object UniversalEngine {
             val out = RootShell.run(
                 "PID=\$(pidof cameraserver | awk '{print \$1}'); " +
                     "if [ -z \"\$PID\" ]; then echo NO_CAM; exit 0; fi; " +
-                    "cat /proc/\$PID/maps 2>/dev/null | grep -E '/data/libvc|/libvc\\.so|libvc\\+\\+|adb/vcamgd/libvc' | head -5; " +
+                    "cat /proc/\$PID/maps 2>/dev/null | grep -iE 'libvc|shadowhook|/dev/vcam|libvc\\+\\+' | head -8; " +
                     "echo END",
                 timeoutSec = 5,
             )
-            out.contains("libvc")
+            out.contains("libvc", ignoreCase = true) ||
+                out.contains("shadowhook", ignoreCase = true) ||
+                out.contains("/dev/vcam")
         } catch (_: Throwable) {
             false
         }

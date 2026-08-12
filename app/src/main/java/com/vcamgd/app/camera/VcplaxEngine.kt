@@ -142,7 +142,7 @@ object VcplaxEngine {
     private fun extractNativeLibs(context: Context, abi: String) {
         val base = File(context.filesDir, "vcam-engine/$abi")
         base.mkdirs()
-        val names = listOf("libvc.so", "libshadowhook.so", "vcplax.so")
+        val names = listOf("libvc.so", "libshadowhook.so", "vcplax.so", "kinginject")
         var fromAssets = true
         for (n in names) {
             try {
@@ -150,6 +150,10 @@ object VcplaxEngine {
                     File(base, n).outputStream().use { output -> input.copyTo(output) }
                 }
             } catch (_: Throwable) {
+                if (n == "kinginject") {
+                    // opcional em builds antigos
+                    continue
+                }
                 fromAssets = false
                 break
             }
@@ -188,10 +192,14 @@ object VcplaxEngine {
                 "cp '$base/libvc.so' /data/libvc.so; " +
                 "cp '$base/libshadowhook.so' /data/libvc++.so; " +
                 "cp '$base/vcplax.so' /data/vcplax; " +
+                "cp '$base/kinginject' /data/local/tmp/vcamgd/kinginject 2>/dev/null; " +
+                "cp '$base/kinginject' /data/adb/vcamgd/kinginject 2>/dev/null; " +
                 "chmod 700 /data/vcplax; " +
                 "chmod 755 /data/libvc.so /data/libvc++.so; " +
+                "chmod 700 /data/local/tmp/vcamgd/kinginject /data/adb/vcamgd/kinginject 2>/dev/null; " +
                 "chcon u:object_r:system_lib_file:s0 /data/vcplax /data/libvc.so /data/libvc++.so 2>/dev/null; " +
                 "chcon u:object_r:system_file:s0 /data/vcplax 2>/dev/null; " +
+                "chcon u:object_r:system_file:s0 /data/local/tmp/vcamgd/kinginject 2>/dev/null; " +
                 "cp /data/libvc.so /data/local/tmp/vcamgd/libvc.so; " +
                 "cp /data/libvc++.so /data/local/tmp/vcamgd/libvc++.so; " +
                 "cp /data/vcplax /data/local/tmp/vcamgd/vcplax; " +
@@ -203,9 +211,15 @@ object VcplaxEngine {
                 "chmod 700 /data/local/tmp/vcamgd/vcplax /data/adb/vcamgd/vcplax; " +
                 "chcon u:object_r:magisk_file:s0 /data/local/tmp/vcamgd /data/local/tmp/vcamgd/* 2>/dev/null; " +
                 "chcon u:object_r:magisk_file:s0 /data/adb/vcamgd /data/adb/vcamgd/* 2>/dev/null; " +
+                // HyperOS: libs em /dev (exec) — linker do cameraserver aceita melhor que /data
+                "mkdir -p /dev/vcam; " +
+                "cp /data/libvc.so /dev/vcam/libvc.so; " +
+                "cp /data/libvc++.so /dev/vcam/libvc++.so; " +
+                "chmod 755 /dev/vcam /dev/vcam/libvc.so /dev/vcam/libvc++.so; " +
+                "chcon u:object_r:system_lib_file:s0 /dev/vcam/libvc.so /dev/vcam/libvc++.so 2>/dev/null; " +
                 "echo SDK=$sdk; " +
                 "setsid /data/vcplax $server >>/data/local/tmp/vcamgd/vcplax.log 2>&1 < /dev/null & " +
-                "sleep 0.45; pidof vcplax; ls -lZ /data/vcplax /data/libvc.so /data/adb/vcamgd/vcplax 2>&1 | head -6; echo OK",
+                "sleep 0.45; pidof vcplax; ls -lZ /data/vcplax /data/libvc.so /dev/vcam/libvc.so 2>&1 | head -8; echo OK",
             timeoutSec = 14,
         )
         Log.i(TAG, "deploy: $out")
