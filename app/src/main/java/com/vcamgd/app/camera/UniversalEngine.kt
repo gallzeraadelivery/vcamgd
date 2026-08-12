@@ -12,9 +12,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
+ * v0.10.16: sync kinginject apos update APK (soft rebind nao deixava bin antigo).
  * v0.10.15: kinginject — already-loaded so por basename (fix maps=empty apos shadowhook).
  * v0.10.14: libs /dev/vcam estaveis (sem deleted); inject=libvc.so real; sem bounce apos OK.
- * v0.10.13: log auditavel (por que preview nao mostra video).
  */
 object UniversalEngine {
     private const val TAG = "KingVCam-Universal"

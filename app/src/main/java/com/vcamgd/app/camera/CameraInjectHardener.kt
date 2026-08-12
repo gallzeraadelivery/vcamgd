@@ -204,7 +204,7 @@ object CameraInjectHardener {
                 "PID=; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do " +
                 "PID=\$(pidof cameraserver | awk '{print \$1}'); " +
                 "[ -n \"\$PID\" ] && break; sleep 0.25; done; " +
-                "echo CAM=\$PID KI=\$KI; " +
+                "echo CAM=\$PID KI=\$KI KI_SZ=\$(wc -c < \"\$KI\" 2>/dev/null); " +
                 "if [ -z \"\$PID\" ]; then echo NO_CAM; exit 0; fi; " +
                 "sleep 0.35; " +
                 ": > /data/local/tmp/vcamgd/kinginject.log; " +

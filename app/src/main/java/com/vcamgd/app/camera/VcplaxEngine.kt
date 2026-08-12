@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.Parcel
 import android.util.Log
+import com.vcamgd.app.BuildConfig
 import com.vcamgd.app.root.RootShell
 import java.io.File
 import java.io.FileOutputStream
@@ -16,15 +17,12 @@ import java.util.zip.ZipFile
  * Motor do APK base liberado (vcplax + libvc + shadowhook).
  *
  * Modelo: APK + root — SEM modulo Magisk/Zygisk e SEM reboot.
- * 1) Extrai .so do APK
- * 2) root: /data/libvc.so, /data/libvc++.so, /data/vcplax
- * 3) root: /data/vcplax <serverName> &
- * 4) Binder play (transact 11/12/15)
  */
 object VcplaxEngine {
     private const val TAG = "KingVCam-Vcplax"
     private const val PREFS = "vcplax_engine"
     private const val KEY_SERVER = "ServerName"
+    private const val KEY_DEPLOYED_VER = "deployed_version_code"
     private const val IFACE = "com.xiaomi.vlive.IMyBinderService"
 
     @Volatile private var binder: IBinder? = null
@@ -50,21 +48,88 @@ object VcplaxEngine {
             val abiDir = resolveAbiDir()
             extractNativeLibs(context, abiDir)
             val server = ensureServerName(context)
+            val p = prefs(context)
+            val deployedVer = p.getInt(KEY_DEPLOYED_VER, -1)
+            val verChanged = deployedVer != BuildConfig.VERSION_CODE
+            // Atualizacao de APK: precisa copiar kinginject novo mesmo com soft rebind
+            val mustForce = forceRedeploy || verChanged
+            if (verChanged) {
+                Log.i(TAG, "version change $deployedVer -> ${BuildConfig.VERSION_CODE} — force redeploy bins")
+                runCatching {
+                    com.vcamgd.app.util.KingVCamLog.w(
+                        "boot",
+                        "APK update $deployedVer->${BuildConfig.VERSION_CODE}: force redeploy kinginject",
+                    )
+                }
+                CameraInjectHardener.freezeLibDeploy = false
+            }
 
-            // Soft: se daemon+binder ja vivos, so reatacha — nao killall (preserva inject)
-            if (!forceRedeploy && softRebind(server)) {
+            // Sempre sincroniza kinginject (+ libs se nao frozen) — soft rebind nao pode
+            // deixar binario antigo de /data/adb apos update do APK.
+            syncBinsToDevice(context, abiDir)
+
+            if (!mustForce && softRebind(server)) {
                 if (restoreEnforcing) {
                     RootShell.run("setenforce 1", timeoutSec = 3)
                 }
-                Log.i(TAG, "binder soft-ok server=$server (sem killall)")
+                p.edit().putInt(KEY_DEPLOYED_VER, BuildConfig.VERSION_CODE).apply()
+                Log.i(TAG, "binder soft-ok server=$server (bins synced, sem killall)")
                 return Result.Ok
             }
 
             deployAndStart(context, abiDir, server)
-            waitForBinder(server, restoreEnforcing)
+            val wait = waitForBinder(server, restoreEnforcing)
+            if (wait is Result.Ok) {
+                p.edit().putInt(KEY_DEPLOYED_VER, BuildConfig.VERSION_CODE).apply()
+            }
+            wait
         } catch (t: Throwable) {
             Log.e(TAG, "ensureRunning", t)
             Result.Failed(t.message ?: "erro ao iniciar motor")
+        }
+    }
+
+    /** Copia kinginject/libs do filesDir para /dev/vcam e /data/adb (sem killall). */
+    fun syncBinsToDevice(context: Context, abi: String? = null) {
+        val abiDir = abi ?: resolveAbiDir()
+        val base = File(context.filesDir, "vcam-engine/$abiDir").absolutePath
+        val freeze = CameraInjectHardener.freezeLibDeploy
+        val out = RootShell.runGlobal(
+            "mkdir -p /data/local/tmp/vcamgd /data/adb/vcamgd /dev/vcam; " +
+                "safe_cp() { SRC=\"\$1\"; DEST=\"\$2\"; " +
+                "[ ! -f \"\$SRC\" ] && return 1; " +
+                "if [ -f \"\$DEST\" ] && cmp -s \"\$SRC\" \"\$DEST\" 2>/dev/null; then return 0; fi; " +
+                "if [ -f \"\$DEST\" ]; then cat \"\$SRC\" > \"\$DEST\"; else cp \"\$SRC\" \"\$DEST\"; fi; return 0; }; " +
+                // kinginject SEMPRE (fix update APK)
+                "safe_cp '$base/kinginject' /data/local/tmp/vcamgd/kinginject; " +
+                "safe_cp '$base/kinginject' /data/adb/vcamgd/kinginject; " +
+                "chmod 700 /data/local/tmp/vcamgd/kinginject /data/adb/vcamgd/kinginject 2>/dev/null; " +
+                "chcon u:object_r:system_file:s0 /data/local/tmp/vcamgd/kinginject 2>/dev/null; " +
+                "chcon u:object_r:magisk_file:s0 /data/adb/vcamgd/kinginject 2>/dev/null; " +
+                if (freeze) {
+                    "echo SYNC_KI_ONLY freeze=1; "
+                } else {
+                    "safe_cp '$base/libvc.so' /dev/vcam/libvc.so; " +
+                        "safe_cp '$base/libshadowhook.so' /dev/vcam/libvc++.so; " +
+                        "safe_cp '$base/libshadowhook.so' /dev/vcam/libshadowhook.so; " +
+                        "safe_cp /dev/vcam/libvc.so /data/libvc.so; " +
+                        "safe_cp /dev/vcam/libvc++.so /data/libvc++.so; " +
+                        "safe_cp /dev/vcam/libshadowhook.so /data/libshadowhook.so; " +
+                        "safe_cp /dev/vcam/libvc.so /data/adb/vcamgd/libvc.so; " +
+                        "safe_cp /dev/vcam/libvc++.so /data/adb/vcamgd/libvc++.so; " +
+                        "safe_cp '$base/vcplax.so' /data/vcplax; " +
+                        "chmod 755 /dev/vcam/libvc.so /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so 2>/dev/null; " +
+                        "chmod 700 /data/vcplax 2>/dev/null; " +
+                        "chcon u:object_r:system_lib_file:s0 /dev/vcam/libvc.so /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so 2>/dev/null; " +
+                        "echo SYNC_ALL; "
+                } +
+                "ls -l /data/adb/vcamgd/kinginject /dev/vcam/libvc.so 2>&1 | head -4; " +
+                "echo KI_SZ=\$(wc -c < /data/adb/vcamgd/kinginject 2>/dev/null)",
+            timeoutSec = 12,
+        )
+        Log.i(TAG, "syncBins: ${out.take(220)}")
+        runCatching {
+            com.vcamgd.app.util.KingVCamLog.i("boot", "syncBins ${out.take(160)}")
         }
     }
 
