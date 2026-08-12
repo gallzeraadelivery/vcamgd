@@ -196,21 +196,25 @@ object CameraInjectHardener {
                 "PID=\$(pidof cameraserver | awk '{print \$1}'); " +
                 "echo CAM=\$PID KI=\$KI; " +
                 "if [ -z \"\$PID\" ]; then echo NO_CAM; exit 0; fi; " +
+                ": > /data/local/tmp/vcamgd/kinginject.log; " +
+                "kill -STOP \$PID 2>/dev/null; " +
+                "BEST_RC=99; " +
                 "for lib in /dev/vcam/libvc.so /system/lib64/libvc.so /data/libvc.so /data/adb/vcamgd/libvc.so; do " +
                 "if [ -f \$lib ]; then " +
-                "echo TRY=\$lib; " +
+                "echo TRY=\$lib >>/data/local/tmp/vcamgd/kinginject.log; " +
                 "\"\$KI\" --pid \$PID --lib \$lib >>/data/local/tmp/vcamgd/kinginject.log 2>&1; " +
-                "echo RC=\$?; " +
-                "cat /proc/\$PID/maps 2>/dev/null | grep -E 'libvc|shadowhook|vcam' | head -5; " +
+                "RC=\$?; echo RC=\$RC lib=\$lib >>/data/local/tmp/vcamgd/kinginject.log; " +
+                "if [ \$RC -lt \$BEST_RC ]; then BEST_RC=\$RC; fi; " +
+                "if [ \$RC -eq 0 ]; then break; fi; " +
                 "fi; done; " +
-                // shadowhook / libvc++
-                "for lib in /dev/vcam/libvc++.so /system/lib64/libvc++.so /data/libvc++.so; do " +
-                "if [ -f \$lib ]; then \"\$KI\" --pid \$PID --lib \$lib >>/data/local/tmp/vcamgd/kinginject.log 2>&1; fi; " +
-                "done; " +
+                "kill -CONT \$PID 2>/dev/null; " +
+                "MAPS=\$(cat /proc/\$PID/maps 2>/dev/null | grep -iE 'libvc|shadowhook|/dev/vcam' | head -3 | tr '\\n' ','); " +
+                "echo KI_RC=\$BEST_RC; echo MAPS=\${MAPS:-empty}; " +
+                "if [ -f /dev/vcam/libvc++.so ]; then \"\$KI\" --pid \$PID --lib /dev/vcam/libvc++.so >>/data/local/tmp/vcamgd/kinginject.log 2>&1; fi; " +
                 "echo KING_DONE",
-            timeoutSec = 20,
+            timeoutSec = 25,
         )
-        Log.i(TAG, "runKingInject: ${out.take(400)}")
+        Log.i(TAG, "runKingInject: ${out.take(500)}")
         return out
     }
 
@@ -222,15 +226,12 @@ object CameraInjectHardener {
                 "echo enforce=\$(getenforce 2>/dev/null); " +
                 "PTR=\$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo none); echo ptrace=\$PTR; " +
                 "echo mm=$mm; " +
-                "echo cam=\$(pidof cameraserver 2>/dev/null); " +
+                "PID=\$(pidof cameraserver 2>/dev/null | awk '{print \$1}'); echo cam=\$PID; " +
                 "echo vcplax=\$(pidof vcplax 2>/dev/null); " +
-                "PID=\$(pidof cameraserver 2>/dev/null | awk '{print \$1}'); " +
-                "if [ -n \"\$PID\" ]; then " +
+                "MAPS=\$(cat /proc/\$PID/maps 2>/dev/null | grep -iE 'libvc|shadow|vcam' | head -3 | tr '\\n' ','); " +
+                "echo maps=\${MAPS:-empty}; " +
+                "echo ki=\$(grep -E 'RC=|attach|dlopen|handle|code=' /data/local/tmp/vcamgd/kinginject.log 2>/dev/null | tail -n 4 | tr '\\n' ';'); " +
                 "echo context=\$(cat /proc/\$PID/attr/current 2>/dev/null); " +
-                "MAPS=\$(cat /proc/\$PID/maps 2>/dev/null | grep -iE 'libvc|shadow|vcam' | head -5); " +
-                "if [ -n \"\$MAPS\" ]; then echo \"\$MAPS\"; else echo maps=empty; fi; " +
-                "fi; " +
-                "echo ki=\$(tail -n 3 /data/local/tmp/vcamgd/kinginject.log 2>/dev/null | tr '\\n' ';'); " +
                 "echo vx=\$(tail -n 2 /data/local/tmp/vcamgd/vcplax.log 2>/dev/null | tr '\\n' ';')",
             timeoutSec = 12,
         )

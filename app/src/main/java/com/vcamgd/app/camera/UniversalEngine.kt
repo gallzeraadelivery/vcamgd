@@ -11,9 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
+ * v0.10.7: kinginject v2 (ELF dlopen + mmap syscall) + diag ki/maps.
  * v0.10.6: su -mm (mount master) — HyperOS Magisk namespace.
- * v0.10.5: kinginject fallback + libs em /dev e bind /system (HyperOS).
- * v0.10.4: estabiliza crash — nao mata HAL no boot, binder com try/catch.
  */
 object UniversalEngine {
     private const val TAG = "KingVCam-Universal"
@@ -108,11 +107,24 @@ object UniversalEngine {
                 lastDiag = lastDiag.copy(detail = lastDiag.detail + " inject_fail")
                 stopWatchdog()
                 val snap = runCatching {
-                    CameraInjectHardener.snapshotDiag().lineSequence().take(6).joinToString(" | ")
+                    CameraInjectHardener.snapshotDiag()
+                        .lineSequence()
+                        .filter { line ->
+                            line.startsWith("mm=") ||
+                                line.startsWith("maps=") ||
+                                line.startsWith("ki=") ||
+                                line.startsWith("ptrace=") ||
+                                line.startsWith("enforce=") ||
+                                line.startsWith("cam=") ||
+                                line.startsWith("vcplax=") ||
+                                line.startsWith("KI_RC=")
+                        }
+                        .take(8)
+                        .joinToString(" | ")
                 }.getOrDefault("")
                 return Result.Failed(
-                    "Inject falhou (libvc nao entrou no cameraserver). " +
-                        "HyperOS bloqueia ptrace/dlopen. Root permanente + Magisk/KSU. " +
+                    "Inject falhou (libvc fora do cameraserver). " +
+                        "mm/ptrace ok nao basta no HyperOS A16 — veja ki= no diag. " +
                         "Diag: $snap",
                 )
             }
@@ -206,6 +218,17 @@ object UniversalEngine {
                     500L
                 }
                 Thread.sleep(settleMs)
+
+                // HyperOS: kinginject cedo (vcplax sozinho nao gruda)
+                if (CameraInjectHardener.isHyperOsFamily() || Build.VERSION.SDK_INT >= 35) {
+                    val ki = CameraInjectHardener.runKingInject()
+                    Log.i(TAG, "kinginject early attempt=${attempt + 1}: ${ki.take(160)}")
+                    Thread.sleep(250)
+                    if (isLibVcInjected()) {
+                        Log.i(TAG, "libvc injected (kinginject-early) attempt=${attempt + 1}")
+                        return true
+                    }
+                }
 
                 // 1) deixa o vcplax tentar sozinho apos bounce
                 if (isLibVcInjected()) {
