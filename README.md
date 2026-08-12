@@ -1,32 +1,31 @@
 # VCamGD / KingVCam
 
-Camera virtual **KingEngine** (motor proprio): daemon `kingvd` + hooks soft Zygisk/Pine.
+Camera virtual **UniversalEngine** (v0.10+): estilo apps base (**APK + root**), alvo **Android 12–16**.
 
-**Alvo:** Android 12–16. Sem LSPosed.
+**Sem** pedir reboot de módulo Magisk no fluxo normal.
 
 Repositorio: https://github.com/gallzeraadelivery/vcamgd  
 Releases: https://github.com/gallzeraadelivery/vcamgd/releases
 
 ## Instalacao
 
-1. Magisk com **Zygisk ON** + root  
-2. Instalar `vcamgd-app-debug.apk`  
-3. Abrir → conceder root → reboot se pedido (1x)  
-4. Video → ativar virtual → **reabrir** a camera  
+1. Root (Magisk ou KernelSU)  
+2. Instalar `KingVCam-0.10.0.apk`  
+3. Abrir → conceder root **permanente**  
+4. Video → ativar virtual → abrir a camera  
 
-Build offline legado (vcplax, 12–13): release **v0.8.1**.
+Nao precisa instalar zip Zygisk nem reiniciar por causa de modulo.
 
-## Motor v0.9 (proprio)
+## Motor v0.10 (universal)
 
-1. `kingvd` — daemon nativo (unix socket) escreve `control.json`  
-2. Zygisk injeta `HookEntry` (soft): preview apos sessao Camera  
-3. IPC: `/data/local/tmp/vcamgd/`  
+1. **SELinux live** (`magiskpolicy` / `ksud`) — sem reboot  
+2. **vcplax** + `libvc` + `shadowhook` (bins ja 16KB)  
+3. Restart do **cameraserver** apos inject  
+4. Fallback Zygisk so se o modulo ja existir  
 
 ## Build
 
 ```bat
-powershell -ExecutionPolicy Bypass -File scripts\build-kingvd.ps1
-powershell -ExecutionPolicy Bypass -File scripts\pack-module.ps1
 gradlew.bat :app:assembleDebug
 ```
 
