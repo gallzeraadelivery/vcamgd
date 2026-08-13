@@ -155,6 +155,22 @@ class VirtualCameraController(private val context: Context) {
             return Result.failure(IllegalStateException(play.reason))
         }
 
+        // Fluxo referencia (HyperOS A16): enablePlay ja fez inject+play+force-stop
+        if (ReferenceFlowEngine.applies()) {
+            withContext(Dispatchers.IO) {
+                runCatching { NativeBridge.switchToVirtual(context) }
+            }
+            _status.value = VirtualCameraStatus(
+                state = VirtualCameraState.ENABLED,
+                message = "Virtual ON (fluxo referencia). Feche Camera Xiaomi, espere 5s, abra de novo.",
+                usingRealCamera = false,
+                moduleInstalled = true,
+                zygiskEvent = runCatching { UniversalEngine.statusLine(context) }.getOrDefault(""),
+            )
+            KingVCamLog.i("enable", "OK ref-flow target=$playTarget inject=${UniversalEngine.isLibVcInjected()}")
+            return Result.success(Unit)
+        }
+
         // Estabiliza play; HyperOS: NAO force-stop (derruba cameraserver / perde inject)
         _status.value = _status.value.copy(message = "Confirmando inject + play…")
         delay(400)
@@ -328,8 +344,12 @@ class VirtualCameraController(private val context: Context) {
             Log.i("KingVCam", "stageLocalToPath: ${out.take(240)}")
             KingVCamLog.i("video", "stage ${out.take(180)}")
             if (out.contains("OK")) {
-                // Overlay/switchVirtual: path absoluto preferindo /dev/vcam
-                val playPath = "/dev/vcam/current.mp4"
+                // Fluxo referencia: path primario /data/local/tmp/vcamgd/current.mp4
+                val playPath = if (ReferenceFlowEngine.applies()) {
+                    "/data/local/tmp/vcamgd/current.mp4"
+                } else {
+                    "/dev/vcam/current.mp4"
+                }
                 context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
                     .edit()
                     .putString("uri", playPath)

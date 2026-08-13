@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
+ * v0.10.20: HyperOS A16 usa [ReferenceFlowEngine] — fluxo espelhado do APK referencia.
  * v0.10.19: resume sessao ao reabrir app; force-stop app camera apos inject (HyperOS).
  * v0.10.18: kinginject ignora (deleted); bind /data->/dev/vcam antes do play.
  */
@@ -34,6 +35,10 @@ object UniversalEngine {
     var lastDiag: Diagnostics = Diagnostics()
         private set
 
+    fun updateDiag(engine: String, detail: String) {
+        lastDiag = lastDiag.copy(engine = engine, detail = detail)
+    }
+
     @Volatile
     private var virtualSession = false
 
@@ -55,6 +60,9 @@ object UniversalEngine {
             val sdk = Build.VERSION.SDK_INT
             if (sdk < 31) {
                 return Result.Failed("Android ${Build.VERSION.RELEASE} abaixo do minimo (12+)")
+            }
+            if (ReferenceFlowEngine.applies()) {
+                return ReferenceFlowEngine.boot(context)
             }
             if (!RootShell.hasRoot(timeoutSec = 6)) {
                 return Result.Failed("Root (su) necessario")
@@ -104,6 +112,11 @@ object UniversalEngine {
             if (path.isEmpty()) {
                 KingVCamLog.e("play", "path vazio — abort")
                 return Result.Failed("Path de video vazio")
+            }
+            if (ReferenceFlowEngine.applies()) {
+                val ctx = appContext
+                    ?: return Result.Failed("Contexto nao vinculado — reabra o app")
+                return ReferenceFlowEngine.enablePlay(ctx, path)
             }
             KingVCamLog.i("play", "start path=$path")
             openInjectWindow(Build.VERSION.SDK_INT)
@@ -229,9 +242,13 @@ object UniversalEngine {
 
     fun stopPlay(): Result {
         virtualSession = false
-        stopWatchdog()
-        CameraInjectHardener.freezeLibDeploy = false
-        runCatching { VcplaxEngine.stopPlay() }
+        if (ReferenceFlowEngine.applies()) {
+            ReferenceFlowEngine.stop()
+        } else {
+            stopWatchdog()
+            CameraInjectHardener.freezeLibDeploy = false
+            runCatching { VcplaxEngine.stopPlay() }
+        }
         // HyperOS: apos virtual, reinicia cameraserver limpo para camera real voltar
         if (CameraInjectHardener.isHyperOsFamily() || Build.VERSION.SDK_INT >= 35) {
             RootShell.runGlobal(
@@ -519,6 +536,12 @@ object UniversalEngine {
         }
     }
 
+    /** Watchdog para fluxo referencia (HyperOS). */
+    fun startWatchdogForReference(playPath: String) {
+        virtualSession = true
+        startWatchdog(playPath)
+    }
+
     private fun startWatchdog(playPath: String) {
         if (!watchdogRunning.compareAndSet(false, true)) return
         val t = Thread({
@@ -577,6 +600,11 @@ object UniversalEngine {
     fun resumeSession(pathOrUrl: String): Result {
         return try {
             val path = pathOrUrl.trim().ifBlank { "/dev/vcam/current.mp4" }
+            if (ReferenceFlowEngine.applies()) {
+                val ctx = appContext
+                    ?: return Result.Failed("Contexto nao vinculado — reabra o app")
+                return ReferenceFlowEngine.resumePlay(ctx, path)
+            }
             KingVCamLog.i("resume", "path=$path")
             openInjectWindow(Build.VERSION.SDK_INT)
             runCatching { CameraInjectHardener.openWindow() }
