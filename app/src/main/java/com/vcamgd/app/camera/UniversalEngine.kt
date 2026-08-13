@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
+ * v0.10.21: fix HyperOS — sem force-stop (mata cameraserver), resume binder heal, play-only.
  * v0.10.20: HyperOS A16 usa [ReferenceFlowEngine] — fluxo espelhado do APK referencia.
  * v0.10.19: resume sessao ao reabrir app; force-stop app camera apos inject (HyperOS).
  * v0.10.18: kinginject ignora (deleted); bind /data->/dev/vcam antes do play.
@@ -44,6 +45,15 @@ object UniversalEngine {
 
     @Volatile
     private var appContext: Context? = null
+
+    @Volatile
+    private var enableInProgress = false
+
+    fun setEnableInProgress(value: Boolean) {
+        enableInProgress = value
+    }
+
+    fun getAppContext(): Context? = appContext
 
     private val watchdogRunning = AtomicBoolean(false)
 
@@ -118,6 +128,7 @@ object UniversalEngine {
                     ?: return Result.Failed("Contexto nao vinculado — reabra o app")
                 return ReferenceFlowEngine.enablePlay(ctx, path)
             }
+            enableInProgress = true
             KingVCamLog.i("play", "start path=$path")
             openInjectWindow(Build.VERSION.SDK_INT)
             runCatching { CameraInjectHardener.openWindow() }
@@ -237,6 +248,49 @@ object UniversalEngine {
             stopWatchdog()
             virtualSession = false
             Result.Failed(t.message ?: "erro no play")
+        } finally {
+            enableInProgress = false
+        }
+    }
+
+    /** Resume/replay sem reinject completo — so binder + play. */
+    fun playOnly(pathOrUrl: String): Result {
+        return try {
+            val path = pathOrUrl.trim().ifBlank { "/dev/vcam/current.mp4" }
+            KingVCamLog.i("play-only", "path=$path")
+            openInjectWindow(Build.VERSION.SDK_INT)
+            runCatching { CameraInjectHardener.openWindow() }
+            CameraInjectHardener.keepWindowAlive()
+            virtualSession = true
+
+            val ctx = appContext
+            if (ctx != null && !VcplaxEngine.ensureBinderConnected(ctx, retries = 6)) {
+                VcplaxEngine.ensureRunning(ctx, restoreEnforcing = false, forceRedeploy = false)
+                if (!VcplaxEngine.ensureBinderConnected(ctx, retries = 4)) {
+                    return Result.Failed("Binder vcplax offline — desligue/ligue virtual")
+                }
+            }
+
+            if (!isLibVcInjected()) {
+                KingVCamLog.w("play-only", "inject ausente — heal rapido")
+                if (!ensureInjected(retries = 1)) {
+                    return Result.Failed("Inject ausente no resume")
+                }
+            }
+
+            val code = playWithFallbacks(path)
+            val status = VcplaxEngine.playStatus()
+            val injected = isLibVcInjected()
+            lastDiag = lastDiag.copy(
+                detail = "play-only code=$code status=$status inject=$injected",
+            )
+            if (code == -1 || !injected) {
+                return Result.Failed("play-only falhou code=$code inject=$injected")
+            }
+            startWatchdog(path)
+            Result.Ok
+        } catch (t: Throwable) {
+            Result.Failed(t.message ?: "erro play-only")
         }
     }
 
@@ -552,20 +606,20 @@ object UniversalEngine {
                     Thread.sleep(3000)
                     ticks++
                     CameraInjectHardener.keepWindowAlive()
-                    if (!virtualSession) break
+                    if (!virtualSession || enableInProgress) break
                     // Revalida inject (app fechado / camera aberta pode quebrar sessao)
-                    if (ticks % 2 == 0 && !isLibVcInjected()) {
+                    if (ticks % 2 == 0 && !enableInProgress && !isLibVcInjected()) {
                         KingVCamLog.w("watchdog", "inject sumiu — heal")
                         runCatching {
                             CameraInjectHardener.runKingInject()
                             CameraInjectHardener.bindDataLibsToDevVcam()
                         }
                     }
-                    if (ticks % 3 == 0) {
+                    if (ticks % 3 == 0 && !enableInProgress) {
                         val code = VcplaxEngine.startPlay(playPath, loop = true, autoRotate = false)
                         if (code == -1) {
                             appContext?.let { ctx ->
-                                if (!VcplaxEngine.ensureBinderAlive(ctx)) {
+                                if (!VcplaxEngine.ensureBinderConnected(ctx, retries = 4)) {
                                     VcplaxEngine.ensureRunning(
                                         ctx,
                                         restoreEnforcing = false,
@@ -628,9 +682,9 @@ object UniversalEngine {
                 CameraInjectHardener.freezeLibDeploy = true
             }
             CameraInjectHardener.bindDataLibsToDevVcam()
-            appContext?.let { VcplaxEngine.ensureBinderAlive(it) }
+            appContext?.let { VcplaxEngine.ensureBinderConnected(it, retries = 6) }
 
-            val play = startPlay(path)
+            val play = playOnly(path)
             if (play is Result.Failed) return play
 
             KingVCamLog.i("resume", "OK inject=${isLibVcInjected()} ${lastDiag.detail}")

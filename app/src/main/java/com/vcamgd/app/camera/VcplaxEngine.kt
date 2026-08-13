@@ -135,11 +135,30 @@ object VcplaxEngine {
 
     /** Reobtem Binder sem matar vcplax. */
     fun ensureBinderAlive(context: Context): Boolean {
+        return ensureBinderConnected(context, retries = 2)
+    }
+
+    /**
+     * Reconecta Binder com retries — corrige play=-1 com vcplax vivo mas binder null.
+     */
+    fun ensureBinderConnected(context: Context, retries: Int = 5): Boolean {
         return try {
             val server = prefs(context).getString(KEY_SERVER, null) ?: return false
-            softRebind(server)
+            repeat(retries) { attempt ->
+                RootShell.run("setenforce 0", timeoutSec = 2)
+                if (softRebind(server)) {
+                    Log.i(TAG, "binder connected attempt=${attempt + 1}")
+                    return true
+                }
+                Thread.sleep(200L + attempt * 100L)
+            }
+            // Ultimo recurso: soft ensureRunning (sem killall se possivel)
+            when (ensureRunning(context, restoreEnforcing = false, forceRedeploy = false)) {
+                is Result.Ok -> softRebind(server)
+                is Result.Failed -> false
+            }
         } catch (t: Throwable) {
-            Log.w(TAG, "ensureBinderAlive: ${t.message}")
+            Log.w(TAG, "ensureBinderConnected: ${t.message}")
             false
         }
     }

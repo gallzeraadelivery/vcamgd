@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 10. Poll maps ate libvc.so (timeout ~4s)
  * 11. Binder stopPlay (12) → startPlay (11) com path referencia
  * 12. playStatus (15) — code!=0 = OK na referencia
- * 13. force-stop SOMENTE apps de camera (nao cameraserver)
+ * 13. Usuario fecha Camera manualmente (HyperOS: force-stop mata cameraserver)
  *
  * FALLBACK (so se inject falhar no passo 10):
  *  bind /data/libvc* + kinginject — patch HyperOS, nao faz parte do referencia puro.
@@ -99,7 +99,7 @@ object ReferenceFlowEngine {
             KingVCamLog.i("ref-enable", "path=$path")
             openReferenceWindow()
             sessionActive.set(true)
-
+            UniversalEngine.setEnableInProgress(true)
             // Passo 9: bounce cameraserver — vcplax inject interno
             UniversalEngine.prepareCameraServerForInject()
             Thread.sleep(800)
@@ -153,11 +153,10 @@ object ReferenceFlowEngine {
                 return UniversalEngine.Result.Failed("Inject perdido apos play referencia")
             }
 
-            // Passo 13: force-stop apps camera (referencia faz apos play OK)
-            NativeBridge.restartCameraApps()
-            Thread.sleep(600)
+            // HyperOS: NAO force-stop — mata cameraserver (ver logs cam=morto apos play)
+            CameraInjectHardener.keepWindowAlive()
             KingVCamLog.i("ref-enable", "OK inject=$finalInject status=$finalCode path=$path")
-            KingVCamLog.auditWhyNoPreview("ref_enable_ok_abrir_camera")
+            KingVCamLog.auditWhyNoPreview("ref_enable_ok_feche_camera_manual")
 
             UniversalEngine.updateDiag(
                 engine = "ref-flow",
@@ -169,40 +168,63 @@ object ReferenceFlowEngine {
             Log.e(TAG, "enablePlay", t)
             sessionActive.set(false)
             UniversalEngine.Result.Failed(t.message ?: "erro ref-enable")
+        } finally {
+            UniversalEngine.setEnableInProgress(false)
         }
     }
 
     fun resumePlay(context: Context, pathOrUrl: String): UniversalEngine.Result {
-        bindContext(context)
-        openReferenceWindow()
-        sessionActive.set(true)
-        val path = resolvePlayPath(pathOrUrl)
+        return try {
+            bindContext(context)
+            openReferenceWindow()
+            sessionActive.set(true)
+            val path = resolvePlayPath(pathOrUrl)
 
-        val needHeal = !UniversalEngine.isLibVcInjected() ||
-            UniversalEngine.mapsHasDeletedLibvc()
-        if (needHeal) {
-            KingVCamLog.w("ref-resume", "heal inject")
-            CameraInjectHardener.freezeLibDeploy = false
-            UniversalEngine.prepareCameraServerForInject()
-            Thread.sleep(700)
-            if (!waitForVcplaxInject(3500L) && !UniversalEngine.isLibVcInjected()) {
-                CameraInjectHardener.runKingInject()
-                Thread.sleep(350)
+            val needHeal = !UniversalEngine.isLibVcInjected() ||
+                UniversalEngine.mapsHasDeletedLibvc()
+            if (needHeal) {
+                KingVCamLog.w("ref-resume", "heal inject")
+                CameraInjectHardener.freezeLibDeploy = false
+                UniversalEngine.prepareCameraServerForInject()
+                Thread.sleep(700)
+                if (!waitForVcplaxInject(3500L) && !UniversalEngine.isLibVcInjected()) {
+                    CameraInjectHardener.runKingInject()
+                    Thread.sleep(350)
+                }
+                if (!UniversalEngine.isLibVcInjected()) {
+                    return UniversalEngine.Result.Failed("Resume referencia: inject falhou")
+                }
+                CameraInjectHardener.freezeLibDeploy = true
             }
-            if (!UniversalEngine.isLibVcInjected()) {
-                return UniversalEngine.Result.Failed("Resume referencia: inject falhou")
+
+            CameraInjectHardener.bindDataLibsToDevVcam()
+            CameraInjectHardener.keepWindowAlive()
+            if (!VcplaxEngine.ensureBinderConnected(context, retries = 6)) {
+                KingVCamLog.e("ref-resume", "binder morto — redeploy soft")
+                VcplaxEngine.ensureRunning(context, restoreEnforcing = false, forceRedeploy = false)
+                if (!VcplaxEngine.ensureBinderConnected(context, retries = 4)) {
+                    return UniversalEngine.Result.Failed("Resume: vcplax binder offline")
+                }
             }
-            CameraInjectHardener.freezeLibDeploy = true
+
+            val code = playReferenceSequence(path)
+            val status = VcplaxEngine.playStatus()
+            KingVCamLog.i("ref-resume", "play code=$code status=$status inject=${UniversalEngine.isLibVcInjected()}")
+
+            if (code == -1) {
+                return UniversalEngine.Result.Failed("Resume: play falhou (binder). Desligue/ligue virtual.")
+            }
+
+            UniversalEngine.updateDiag(
+                engine = "ref-flow",
+                detail = "resume play=$code status=$status inject=${UniversalEngine.isLibVcInjected()}",
+            )
+            UniversalEngine.startWatchdogForReference(path)
+            UniversalEngine.Result.Ok
+        } catch (t: Throwable) {
+            KingVCamLog.e("ref-resume", t.message ?: "erro")
+            UniversalEngine.Result.Failed(t.message ?: "erro ref-resume")
         }
-
-        CameraInjectHardener.bindDataLibsToDevVcam()
-        context.let { VcplaxEngine.ensureBinderAlive(it) }
-        playReferenceSequence(path)
-        NativeBridge.restartCameraApps()
-        Thread.sleep(500)
-        UniversalEngine.startWatchdogForReference(path)
-        KingVCamLog.i("ref-resume", "OK path=$path inject=${UniversalEngine.isLibVcInjected()}")
-        return UniversalEngine.Result.Ok
     }
 
     fun stop() {
@@ -246,6 +268,7 @@ object ReferenceFlowEngine {
     /** stopPlay → startPlay com ordem de paths do referencia. */
     private fun playReferenceSequence(primary: String): Int {
         CameraInjectHardener.keepWindowAlive()
+        appContext()?.let { VcplaxEngine.ensureBinderConnected(it, retries = 3) }
         runCatching { VcplaxEngine.stopPlay() }
         Thread.sleep(200)
 
@@ -320,4 +343,6 @@ object ReferenceFlowEngine {
         val out = RootShell.run("file /system/bin/cameraserver 2>/dev/null", timeoutSec = 4)
         return if (out.contains("32-bit")) "armeabi-v7a" else "arm64-v8a"
     }
+
+    private fun appContext(): Context? = UniversalEngine.getAppContext()
 }

@@ -66,11 +66,11 @@ class VirtualCameraController(private val context: Context) {
             is UniversalEngine.Result.Ok -> {
                 withContext(Dispatchers.IO) {
                     runCatching { NativeBridge.switchToVirtual(context) }
-                    runCatching { NativeBridge.restartCameraApps() }
+                    // HyperOS: NAO force-stop no resume — derruba cameraserver/inject
                 }
                 _status.value = VirtualCameraStatus(
                     state = VirtualCameraState.ENABLED,
-                    message = "Virtual retomada. Feche Camera Xiaomi, espere 5s, abra de novo.",
+                    message = "Virtual retomada. Feche Camera Xiaomi (recentes), espere 5s, abra.",
                     usingRealCamera = false,
                     moduleInstalled = true,
                     zygiskEvent = runCatching { UniversalEngine.statusLine(context) }.getOrDefault(""),
@@ -162,7 +162,7 @@ class VirtualCameraController(private val context: Context) {
             }
             _status.value = VirtualCameraStatus(
                 state = VirtualCameraState.ENABLED,
-                message = "Virtual ON (fluxo referencia). Feche Camera Xiaomi, espere 5s, abra de novo.",
+                message = "Virtual ON. Feche Camera Xiaomi (recentes), espere 5s, abra de novo.",
                 usingRealCamera = false,
                 moduleInstalled = true,
                 zygiskEvent = runCatching { UniversalEngine.statusLine(context) }.getOrDefault(""),
@@ -190,12 +190,16 @@ class VirtualCameraController(private val context: Context) {
         }
         delay(300)
         val hyper = CameraInjectHardener.isHyperOsFamily()
-        // Force-stop SOMENTE apps de camera (nao cameraserver) — sessao nova = libvc ativo
-        withContext(Dispatchers.IO) {
-            runCatching { NativeBridge.restartCameraApps() }
+        // HyperOS: force-stop mata cameraserver — usuario fecha camera manualmente
+        if (!hyper) {
+            withContext(Dispatchers.IO) {
+                runCatching { NativeBridge.restartCameraApps() }
+            }
+            KingVCamLog.i("enable", "force-stop apps camera")
+            delay(500)
+        } else {
+            KingVCamLog.i("enable", "HyperOS: sem force-stop (feche camera manualmente)")
         }
-        KingVCamLog.i("enable", if (hyper) "force-stop apps camera (HyperOS)" else "force-stop apps camera")
-        delay(if (hyper) 800 else 500)
         val stillInjected = withContext(Dispatchers.IO) {
             runCatching {
                 CameraInjectHardener.keepWindowAlive()
