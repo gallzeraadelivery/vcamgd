@@ -119,7 +119,7 @@ object NativeBridge {
             virtual = true,
             mode = "virtual",
             source = "local",
-            uri = VIDEO_TMP,
+            uri = "/dev/vcam/current.mp4",
             url = "",
         )
         // Restart so no VirtualCameraController — evita double-kill cedo demais
@@ -324,11 +324,13 @@ object NativeBridge {
     private fun writeControlFiles(json: String): Boolean {
         val escaped = json.replace("'", "'\\''")
         val script =
-            "mkdir -p '$TMP_DIR' '$ADB_DIR'; " +
+            "mkdir -p '$TMP_DIR' '$ADB_DIR' /dev/vcam; " +
                 "printf '%s' '$escaped' > '$CONTROL_TMP'; " +
                 "printf '%s' '$escaped' > '$CONTROL_ADB'; " +
-                "chmod 777 '$TMP_DIR'; chmod 666 '$CONTROL_TMP' '$CONTROL_ADB' " +
+                "printf '%s' '$escaped' > /dev/vcam/control.json; " +
+                "chmod 777 '$TMP_DIR' /dev/vcam; chmod 666 '$CONTROL_TMP' '$CONTROL_ADB' /dev/vcam/control.json " +
                 "'$STATUS_TMP' '$STATUS_ADB' 2>/dev/null; " +
+                "chcon u:object_r:system_lib_file:s0 /dev/vcam/control.json 2>/dev/null; " +
                 "echo OK"
         return shellSu(script).contains("OK")
     }

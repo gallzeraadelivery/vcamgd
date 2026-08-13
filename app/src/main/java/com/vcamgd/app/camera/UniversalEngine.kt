@@ -12,8 +12,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
+ * v0.10.19: resume sessao ao reabrir app; force-stop app camera apos inject (HyperOS).
  * v0.10.18: kinginject ignora (deleted); bind /data->/dev/vcam antes do play.
- * v0.10.17: inject limpo = libvc.so sem (deleted); nao falhar se houver deleted + limpo.
  */
 object UniversalEngine {
     private const val TAG = "KingVCam-Universal"
@@ -530,7 +530,14 @@ object UniversalEngine {
                     ticks++
                     CameraInjectHardener.keepWindowAlive()
                     if (!virtualSession) break
-                    // Sem bounce/kill no watchdog — so re-play se binder vivo
+                    // Revalida inject (app fechado / camera aberta pode quebrar sessao)
+                    if (ticks % 2 == 0 && !isLibVcInjected()) {
+                        KingVCamLog.w("watchdog", "inject sumiu — heal")
+                        runCatching {
+                            CameraInjectHardener.runKingInject()
+                            CameraInjectHardener.bindDataLibsToDevVcam()
+                        }
+                    }
                     if (ticks % 3 == 0) {
                         val code = VcplaxEngine.startPlay(playPath, loop = true, autoRotate = false)
                         if (code == -1) {
@@ -558,8 +565,59 @@ object UniversalEngine {
         t.start()
     }
 
-    private fun stopWatchdog() {
+    fun stopWatchdog() {
         watchdogRunning.set(false)
         watchdogThread = null
+    }
+
+    /**
+     * Reabrir app com virtual ON: watchdog morreu — reinjeta, play e watchdog.
+     * Evita "nao conecta" na 2a abertura da camera.
+     */
+    fun resumeSession(pathOrUrl: String): Result {
+        return try {
+            val path = pathOrUrl.trim().ifBlank { "/dev/vcam/current.mp4" }
+            KingVCamLog.i("resume", "path=$path")
+            openInjectWindow(Build.VERSION.SDK_INT)
+            runCatching { CameraInjectHardener.openWindow() }
+            CameraInjectHardener.keepWindowAlive()
+            virtualSession = true
+
+            val camPid = RootShell.runGlobal("pidof cameraserver 2>/dev/null", timeoutSec = 3).trim()
+            var injected = isLibVcInjected()
+            val needHeal = camPid.isEmpty() || !injected ||
+                mapsHasDeletedLibvc()
+
+            if (needHeal) {
+                KingVCamLog.w(
+                    "resume",
+                    "heal cam=${camPid.ifBlank { "dead" }} inject=$injected deleted=${mapsHasDeletedLibvc()}",
+                )
+                CameraInjectHardener.freezeLibDeploy = false
+                if (!ensureInjected(retries = 2)) {
+                    return Result.Failed("Resume: inject falhou — desligue/ligue a virtual")
+                }
+                CameraInjectHardener.freezeLibDeploy = true
+            }
+            CameraInjectHardener.bindDataLibsToDevVcam()
+            appContext?.let { VcplaxEngine.ensureBinderAlive(it) }
+
+            val play = startPlay(path)
+            if (play is Result.Failed) return play
+
+            KingVCamLog.i("resume", "OK inject=${isLibVcInjected()} ${lastDiag.detail}")
+            Result.Ok
+        } catch (t: Throwable) {
+            KingVCamLog.e("resume", t.message ?: "erro")
+            Result.Failed(t.message ?: "erro no resume")
+        }
+    }
+
+    /** Path de play persistido ou default HyperOS. */
+    fun currentPlayPath(context: Context): String {
+        val prefs = context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
+        return prefs.getString("uri", null)?.takeIf { it.startsWith("/") && it.length > 1 }
+            ?: prefs.getString("url", null)?.takeIf { it.isNotBlank() }
+            ?: "/dev/vcam/current.mp4"
     }
 }

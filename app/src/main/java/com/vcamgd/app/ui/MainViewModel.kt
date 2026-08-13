@@ -59,6 +59,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refresh()
     }
 
+    private var lastResumeMs = 0L
+
+    /** Ao reabrir o app com virtual ligada, reinjeta/play (evita erro na 2a abertura). */
+    fun resumeVirtualIfNeeded() {
+        val prefs = _uiState.value?.prefs ?: return
+        if (!prefs.virtualCameraEnabled) return
+        val now = System.currentTimeMillis()
+        if (now - lastResumeMs < 4000) return
+        lastResumeMs = now
+        viewModelScope.launch {
+            runCatching { controller.resumeVirtualSession() }
+                .onFailure { Log.w("KingVCam", "resumeVirtual: ${it.message}") }
+        }
+    }
+
     fun refresh() {
         viewModelScope.launch {
             runCatching {

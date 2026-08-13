@@ -55,6 +55,37 @@ class VirtualCameraController(private val context: Context) {
         )
     }
 
+    /** App reaberto com virtual ON — reinjeta/play (watchdog morreu com o processo). */
+    suspend fun resumeVirtualSession(): Result<Unit> {
+        val path = UniversalEngine.currentPlayPath(context)
+        _status.value = _status.value.copy(
+            message = "Retomando sessao virtual…",
+        )
+        val r = withContext(Dispatchers.IO) { UniversalEngine.resumeSession(path) }
+        return when (r) {
+            is UniversalEngine.Result.Ok -> {
+                withContext(Dispatchers.IO) {
+                    runCatching { NativeBridge.switchToVirtual(context) }
+                    runCatching { NativeBridge.restartCameraApps() }
+                }
+                _status.value = VirtualCameraStatus(
+                    state = VirtualCameraState.ENABLED,
+                    message = "Virtual retomada. Feche Camera Xiaomi, espere 5s, abra de novo.",
+                    usingRealCamera = false,
+                    moduleInstalled = true,
+                    zygiskEvent = runCatching { UniversalEngine.statusLine(context) }.getOrDefault(""),
+                )
+                KingVCamLog.i("resume", "UI OK path=$path")
+                Result.success(Unit)
+            }
+            is UniversalEngine.Result.Failed -> {
+                KingVCamLog.e("resume", r.reason)
+                _status.value = _status.value.copy(message = "Resume: ${r.reason}")
+                Result.failure(IllegalStateException(r.reason))
+            }
+        }
+    }
+
     suspend fun enable(
         sourceType: VideoSourceType,
         localUri: Uri?,
@@ -143,16 +174,12 @@ class VirtualCameraController(private val context: Context) {
         }
         delay(300)
         val hyper = CameraInjectHardener.isHyperOsFamily()
-        if (!hyper) {
-            withContext(Dispatchers.IO) {
-                runCatching { NativeBridge.restartCameraApps() }
-            }
-            KingVCamLog.i("enable", "force-stop apps de camera")
-            delay(500)
-        } else {
-            KingVCamLog.i("enable", "HyperOS: sem force-stop (preserva cameraserver/inject)")
-            delay(200)
+        // Force-stop SOMENTE apps de camera (nao cameraserver) — sessao nova = libvc ativo
+        withContext(Dispatchers.IO) {
+            runCatching { NativeBridge.restartCameraApps() }
         }
+        KingVCamLog.i("enable", if (hyper) "force-stop apps camera (HyperOS)" else "force-stop apps camera")
+        delay(if (hyper) 800 else 500)
         val stillInjected = withContext(Dispatchers.IO) {
             runCatching {
                 CameraInjectHardener.keepWindowAlive()
@@ -214,11 +241,12 @@ class VirtualCameraController(private val context: Context) {
         }
         withContext(Dispatchers.IO) {
             KingVCamLog.i("enable", "OK inject=true target=$playTarget")
+            runCatching { NativeBridge.switchToVirtual(context) }
             KingVCamLog.auditWhyNoPreview("enable_ok_abrir_camera_e_checar_preview")
         }
         _status.value = VirtualCameraStatus(
             state = VirtualCameraState.ENABLED,
-            message = "Virtual ON (inject=true). Feche a camera, espere 3s, abra de novo. Veja Status → Log se nao for o video.",
+            message = "Virtual ON (inject=true). Feche a Camera Xiaomi (recentes), espere 5s, abra de novo.",
             usingRealCamera = false,
             moduleInstalled = true,
             zygiskEvent = runCatching { UniversalEngine.statusLine(context) }.getOrDefault(""),

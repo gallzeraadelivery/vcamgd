@@ -44,4 +44,11 @@ class MainActivity : AppCompatActivity() {
         binding.bottomNav.setupWithNavController(navHost.navController)
         vm = ViewModelProvider(this)[MainViewModel::class.java]
     }
+
+    override fun onResume() {
+        super.onResume()
+        if (::vm.isInitialized) {
+            vm.resumeVirtualIfNeeded()
+        }
+    }
 }
