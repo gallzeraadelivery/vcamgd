@@ -12,9 +12,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Motor APK+root only (vcplax) — SEM Zygisk.
  *
+ * v0.10.18: kinginject ignora (deleted); bind /data->/dev/vcam antes do play.
  * v0.10.17: inject limpo = libvc.so sem (deleted); nao falhar se houver deleted + limpo.
- * v0.10.16: sync kinginject apos update APK (soft rebind nao deixava bin antigo).
- * v0.10.15: kinginject — already-loaded so por basename (fix maps=empty apos shadowhook).
  */
 object UniversalEngine {
     private const val TAG = "KingVCam-Universal"
@@ -141,6 +140,7 @@ object UniversalEngine {
             }
             KingVCamLog.i("inject", "OK inject=true")
             CameraInjectHardener.freezeLibDeploy = true
+            CameraInjectHardener.bindDataLibsToDevVcam()
             CameraInjectHardener.keepWindowAlive()
 
             var code = playWithFallbacks(path)
@@ -155,25 +155,42 @@ object UniversalEngine {
                 CameraInjectHardener.freezeLibDeploy = false
                 if (ensureInjected(retries = 2)) {
                     CameraInjectHardener.freezeLibDeploy = true
+                    CameraInjectHardener.bindDataLibsToDevVcam()
                     Thread.sleep(400)
                     code = playWithFallbacks(path)
                     KingVCamLog.i("play", "re-play code=$code")
                 }
             }
 
+            // Espera settle — play/vcplax pode remapear por instantes
+            Thread.sleep(600)
             var injected = isLibVcInjected()
-            // Soft re-inject se o map sumiu apos play (sem bounce)
             if (!injected) {
-                Log.w(TAG, "inject sumiu apos play — soft re-inject")
-                KingVCamLog.w("inject", "sumiu apos play — soft re-inject")
+                Thread.sleep(400)
+                injected = isLibVcInjected()
+            }
+            if (!injected) {
+                val deleted = mapsHasDeletedLibvc()
+                Log.w(TAG, "inject sumiu apos play deleted=$deleted — recover")
+                KingVCamLog.w("inject", "sumiu apos play deleted=$deleted — bounce+reinject /dev/vcam")
                 CameraInjectHardener.keepWindowAlive()
-                CameraInjectHardener.runKingInject()
+                CameraInjectHardener.freezeLibDeploy = false
+                if (deleted || CameraInjectHardener.isHyperOsFamily()) {
+                    // So kinginject com maps (deleted) piora — bounce limpo
+                    prepareCameraServerForInject()
+                    Thread.sleep(700)
+                    CameraInjectHardener.runKingInject()
+                    CameraInjectHardener.bindDataLibsToDevVcam()
+                } else {
+                    CameraInjectHardener.runKingInject()
+                }
+                CameraInjectHardener.freezeLibDeploy = true
                 Thread.sleep(300)
                 injected = isLibVcInjected()
                 if (injected) {
                     appContext?.let { VcplaxEngine.ensureBinderAlive(it) }
                     code = playWithFallbacks(path)
-                    KingVCamLog.i("play", "re-play apos soft inject code=$code")
+                    KingVCamLog.i("play", "re-play apos recover code=$code inject=$injected")
                 }
             }
             CameraInjectHardener.keepWindowAlive()
@@ -356,7 +373,7 @@ object UniversalEngine {
     private fun relinkVcplaxAfterInject() {
         val ctx = appContext ?: return
         CameraInjectHardener.keepWindowAlive()
-        // Nao cp sobre /data/libvc*.so se ja injetado — gera (deleted) no maps
+        CameraInjectHardener.bindDataLibsToDevVcam()
         if (!CameraInjectHardener.freezeLibDeploy) {
             RootShell.runGlobal(
                 "cp -f /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so 2>/dev/null; " +

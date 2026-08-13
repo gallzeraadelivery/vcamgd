@@ -101,7 +101,7 @@ static bool maps_contains(pid_t pid, const char* needle) {
     return maps.find(needle) != std::string::npos;
 }
 
-/** So libvc.so real — NAO shadowhook/libvc++/qualquer /dev/vcam/. */
+/** libvc.so mapeado e arquivo ainda existe (nao "(deleted)"). */
 static bool maps_has_libvc_so(pid_t pid) {
     char maps_path[64];
     snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
@@ -115,6 +115,25 @@ static bool maps_has_libvc_so(pid_t pid) {
         pos = eol + 1;
         if (line.find("libvc.so") == std::string::npos) continue;
         if (line.find("libvc++") != std::string::npos) continue;
+        if (line.find("(deleted)") != std::string::npos) continue;
+        return true;
+    }
+    return false;
+}
+
+static bool maps_has_basename_clean(pid_t pid, const char* basename) {
+    char maps_path[64];
+    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
+    std::string maps;
+    if (!read_all(maps_path, &maps)) return false;
+    size_t pos = 0;
+    while (pos < maps.size()) {
+        size_t eol = maps.find('\n', pos);
+        if (eol == std::string::npos) eol = maps.size();
+        std::string line = maps.substr(pos, eol - pos);
+        pos = eol + 1;
+        if (line.find(basename) == std::string::npos) continue;
+        if (line.find("(deleted)") != std::string::npos) continue;
         return true;
     }
     return false;
@@ -124,7 +143,7 @@ static bool maps_has_basename(pid_t pid, const char* lib_path) {
     const char* base = strrchr(lib_path, '/');
     base = base ? base + 1 : lib_path;
     if (!strcmp(base, "libvc.so")) return maps_has_libvc_so(pid);
-    return maps_contains(pid, base);
+    return maps_has_basename_clean(pid, base);
 }
 
 static uintptr_t elf_sym_offset(const char* path, const char* sym) {

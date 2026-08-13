@@ -109,12 +109,9 @@ object VcplaxEngine {
                 if (freeze) {
                     "echo SYNC_KI_ONLY freeze=1; "
                 } else {
-                    "safe_cp '$base/libvc.so' /dev/vcam/libvc.so; " +
+                        "safe_cp '$base/libvc.so' /dev/vcam/libvc.so; " +
                         "safe_cp '$base/libshadowhook.so' /dev/vcam/libvc++.so; " +
                         "safe_cp '$base/libshadowhook.so' /dev/vcam/libshadowhook.so; " +
-                        "safe_cp /dev/vcam/libvc.so /data/libvc.so; " +
-                        "safe_cp /dev/vcam/libvc++.so /data/libvc++.so; " +
-                        "safe_cp /dev/vcam/libshadowhook.so /data/libshadowhook.so; " +
                         "safe_cp /dev/vcam/libvc.so /data/adb/vcamgd/libvc.so; " +
                         "safe_cp /dev/vcam/libvc++.so /data/adb/vcamgd/libvc++.so; " +
                         "safe_cp '$base/vcplax.so' /data/vcplax; " +
@@ -130,6 +127,9 @@ object VcplaxEngine {
         Log.i(TAG, "syncBins: ${out.take(220)}")
         runCatching {
             com.vcamgd.app.util.KingVCamLog.i("boot", "syncBins ${out.take(160)}")
+        }
+        if (!freeze) {
+            CameraInjectHardener.bindDataLibsToDevVcam()
         }
     }
 
@@ -307,17 +307,13 @@ object VcplaxEngine {
                 "safe_cp '$base/vcplax.so' /data/vcplax; " +
                 "safe_cp '$base/kinginject' /data/local/tmp/vcamgd/kinginject; " +
                 "safe_cp '$base/kinginject' /data/adb/vcamgd/kinginject; " +
-                "safe_cp /dev/vcam/libvc.so /data/libvc.so; " +
-                "safe_cp /dev/vcam/libvc++.so /data/libvc++.so; " +
-                "safe_cp /dev/vcam/libshadowhook.so /data/libshadowhook.so; " +
                 "safe_cp /dev/vcam/libvc.so /data/adb/vcamgd/libvc.so; " +
                 "safe_cp /dev/vcam/libvc++.so /data/adb/vcamgd/libvc++.so; " +
                 "safe_cp /data/vcplax /data/adb/vcamgd/vcplax; " +
                 "safe_cp /data/vcplax /data/local/tmp/vcamgd/vcplax; " +
                 "chmod 755 /dev/vcam /dev/vcam/libvc.so /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so; " +
-                "chmod 755 /data/libvc.so /data/libvc++.so /data/libshadowhook.so; " +
                 "chmod 700 /data/vcplax /data/local/tmp/vcamgd/kinginject /data/adb/vcamgd/kinginject 2>/dev/null; " +
-                "chcon u:object_r:system_lib_file:s0 /dev/vcam/libvc.so /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so /data/libvc.so /data/libvc++.so /data/libshadowhook.so 2>/dev/null; " +
+                "chcon u:object_r:system_lib_file:s0 /dev/vcam/libvc.so /dev/vcam/libvc++.so /dev/vcam/libshadowhook.so 2>/dev/null; " +
                 "chcon u:object_r:system_file:s0 /data/vcplax 2>/dev/null; " +
                 "chcon u:object_r:magisk_file:s0 /data/adb/vcamgd /data/adb/vcamgd/* 2>/dev/null; "
         }
@@ -330,10 +326,13 @@ object VcplaxEngine {
                 libPart +
                 "echo SDK=$sdk; " +
                 "setsid /data/vcplax $server >>/data/local/tmp/vcamgd/vcplax.log 2>&1 < /dev/null & " +
-                "sleep 0.45; pidof vcplax; ls -lZ /dev/vcam/libvc.so /data/libvc.so 2>&1 | head -6; echo OK",
+                "sleep 0.45; pidof vcplax; ls -lZ /dev/vcam/libvc.so 2>&1 | head -6; echo OK",
             timeoutSec = 16,
         )
         Log.i(TAG, "deploy: $out")
+        if (!freeze) {
+            CameraInjectHardener.bindDataLibsToDevVcam()
+        }
     }
 
     /**
