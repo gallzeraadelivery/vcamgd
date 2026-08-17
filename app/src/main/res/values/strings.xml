@@ -4,7 +4,7 @@
     <string name="tab_home">Inicio</string>
     <string name="tab_control">Controle</string>
     <string name="tab_status">Status</string>
-    <string name="home_subtitle">Motor proprio KingEngine (kingvd + Zygisk soft). Android 12–16</string>
+    <string name="home_subtitle">Motor B: hooks no app Camera (Zygisk). Android 12–16. 1 reboot na 1a instalacao.</string>
     <string name="video_source">Fonte de video</string>
     <string name="source_local">Arquivo</string>
     <string name="source_network">Rede</string>
@@ -28,6 +28,12 @@
     <string name="using_real_camera">Atual: camera real</string>
     <string name="using_virtual_camera">Atual: camera virtual</string>
     <string name="refresh">Atualizar</string>
+    <string name="audit_log_title">Log de auditoria</string>
+    <string name="audit_log_hint">Por que a camera nao mostra o video: inject, play, maps, arquivo. Copie e envie.</string>
+    <string name="audit_log_refresh">Ver log</string>
+    <string name="audit_log_why">Auditar preview</string>
+    <string name="audit_log_copy">Copiar</string>
+    <string name="audit_log_clear">Limpar</string>
     <string name="eula_title">Aviso legal</string>
     <string name="eula_checkbox">Li e concordo com o aviso</string>
     <string name="eula_continue">Continuar</string>

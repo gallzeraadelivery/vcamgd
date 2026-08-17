@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
@@ -11,7 +12,8 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import com.vcamgd.app.VCamApp
-import com.vcamgd.app.camera.KingEngine
+import com.vcamgd.app.camera.AppHookEngine
+import com.vcamgd.app.camera.UniversalEngine
 import com.vcamgd.app.camera.VirtualCameraController
 import com.vcamgd.app.camera.VirtualCameraStatus
 import com.vcamgd.app.data.AppPreferences
@@ -19,6 +21,7 @@ import com.vcamgd.app.data.VideoSourceType
 import com.vcamgd.app.root.RootChecker
 import com.vcamgd.app.root.RootStatus
 import com.vcamgd.app.service.OverlayService
+import com.vcamgd.app.util.KingVCamLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -32,6 +35,7 @@ data class MainUiState(
     val message: String? = null,
     val needsReboot: Boolean = false,
     val moduleMessage: String? = null,
+    val auditLog: String = "",
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -42,6 +46,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: LiveData<MainUiState> = _uiState
 
     init {
+        UniversalEngine.bindContext(application)
         viewModelScope.launch {
             settings.preferences.collectLatest { prefs ->
                 _uiState.postValue(_uiState.value?.copy(prefs = prefs) ?: MainUiState(prefs = prefs))
@@ -53,46 +58,74 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         refresh()
-        warmKingEngine()
+    }
+
+    private var lastResumeMs = 0L
+
+    /** Ao reabrir o app com virtual ligada, reinjeta/play (evita erro na 2a abertura). */
+    fun resumeVirtualIfNeeded() {
+        val prefs = _uiState.value?.prefs ?: return
+        if (!prefs.virtualCameraEnabled) return
+        val now = System.currentTimeMillis()
+        if (now - lastResumeMs < 4000) return
+        lastResumeMs = now
+        viewModelScope.launch {
+            runCatching { controller.resumeVirtualSession() }
+                .onFailure { Log.w("KingVCam", "resumeVirtual: ${it.message}") }
+        }
     }
 
     fun refresh() {
         viewModelScope.launch {
-            val root = RootChecker.check()
-            controller.refreshModuleStatus()
-            _uiState.postValue(_uiState.value?.copy(root = root, message = null))
+            runCatching {
+                val root = withContext(Dispatchers.IO) { RootChecker.check() }
+                controller.refreshModuleStatus()
+                _uiState.postValue(_uiState.value?.copy(root = root, message = null))
+            }.onFailure {
+                _uiState.postValue(
+                    _uiState.value?.copy(message = "Falha ao atualizar: ${it.message}"),
+                )
+            }
         }
     }
 
-    /** Prepara motor proprio (kingvd + Zygisk soft hooks). */
-    fun warmKingEngine() {
+    /** Prepara modulo Zygisk (hooks no app). Pode pedir 1 reboot. */
+    fun warmEngine() {
         viewModelScope.launch {
-            _uiState.postValue(_uiState.value?.copy(busy = true, moduleMessage = "Preparando KingEngine..."))
+            _uiState.postValue(
+                _uiState.value?.copy(busy = true, moduleMessage = "Preparando modulo Zygisk…"),
+            )
             val result = withContext(Dispatchers.IO) {
-                KingEngine.ensureRunning(getApplication())
+                runCatching { AppHookEngine.ensureReady(getApplication()) }
+                    .getOrElse { AppHookEngine.Result.Failed(it.message ?: "erro") }
             }
             when (result) {
-                is KingEngine.Result.Ok -> {
+                is AppHookEngine.Result.Ok -> {
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
                             needsReboot = false,
-                            moduleMessage = "KingEngine pronto (kingvd + Zygisk soft)",
+                            moduleMessage = "Hooks prontos: ${AppHookEngine.feederStatus()}",
                         ),
                     )
-                    controller.refreshModuleStatus()
+                    runCatching { controller.refreshModuleStatus() }
                 }
-                is KingEngine.Result.Failed -> {
-                    val reboot = result.reason.startsWith("REBOOT_REQUIRED:")
+                is AppHookEngine.Result.NeedsReboot -> {
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
-                            needsReboot = reboot,
-                            moduleMessage = if (reboot) {
-                                "Modulo Zygisk instalado — reinicie o telefone"
-                            } else {
-                                "Motor: ${result.reason}"
-                            },
+                            needsReboot = true,
+                            moduleMessage = result.reason,
+                        ),
+                    )
+                    toast(result.reason)
+                }
+                is AppHookEngine.Result.Failed -> {
+                    _uiState.postValue(
+                        _uiState.value?.copy(
+                            busy = false,
+                            needsReboot = false,
+                            moduleMessage = "Modulo: ${result.reason}",
                         ),
                     )
                 }
@@ -100,7 +133,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun ensureEmbeddedModule() = warmKingEngine()
+    fun warmVcplax() = warmEngine()
+    fun warmKingEngine() = warmEngine()
+    fun ensureEmbeddedModule() = warmEngine()
 
     fun clearNeedsReboot() {
         _uiState.postValue(_uiState.value?.copy(needsReboot = false))
@@ -128,34 +163,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleVirtualCamera(enable: Boolean) {
         viewModelScope.launch {
-            _uiState.postValue(_uiState.value?.copy(busy = true))
-            if (enable) {
-                val boot = withContext(Dispatchers.IO) {
-                    KingEngine.ensureRunning(getApplication())
+            _uiState.postValue(_uiState.value?.copy(busy = true, needsReboot = false))
+            runCatching {
+                if (enable) {
+                    val boot = withContext(Dispatchers.IO) {
+                        AppHookEngine.ensureReady(getApplication())
+                    }
+                    if (boot is AppHookEngine.Result.NeedsReboot) {
+                        _uiState.postValue(
+                            _uiState.value?.copy(busy = false, needsReboot = true, moduleMessage = boot.reason),
+                        )
+                        toast(boot.reason)
+                        return@launch
+                    }
+                    if (boot is AppHookEngine.Result.Failed) {
+                        _uiState.postValue(_uiState.value?.copy(busy = false))
+                        toast("Modulo Zygisk: ${boot.reason}")
+                        return@launch
+                    }
                 }
-                if (boot is KingEngine.Result.Failed) {
-                    val reboot = boot.reason.startsWith("REBOOT_REQUIRED:")
-                    _uiState.postValue(_uiState.value?.copy(busy = false, needsReboot = reboot))
-                    toast(
-                        if (reboot) "Reinicie o telefone antes de ativar"
-                        else "Motor: ${boot.reason}",
+                val prefs = _uiState.value?.prefs ?: AppPreferences()
+                val result = if (enable) {
+                    controller.enable(
+                        sourceType = prefs.sourceType,
+                        localUri = prefs.localVideoUri?.let(Uri::parse),
+                        networkUrl = prefs.networkUrl,
                     )
-                    return@launch
+                } else {
+                    controller.disable()
                 }
-            }
-            val prefs = _uiState.value?.prefs ?: AppPreferences()
-            val result = if (enable) {
-                controller.enable(
-                    sourceType = prefs.sourceType,
-                    localUri = prefs.localVideoUri?.let(Uri::parse),
-                    networkUrl = prefs.networkUrl,
+                settings.setVirtualCameraEnabled(result.isSuccess && enable)
+                val reboot = result.exceptionOrNull()?.message?.contains("Reinicie", ignoreCase = true) == true
+                _uiState.postValue(
+                    _uiState.value?.copy(busy = false, needsReboot = reboot),
                 )
-            } else {
-                controller.disable()
+                toast(result.exceptionOrNull()?.message ?: if (enable) "Virtual ON — feche e abra a Camera" else "Desligado")
+            }.onFailure { t ->
+                Log.e("KingVCam", "toggleVirtualCamera", t)
+                _uiState.postValue(_uiState.value?.copy(busy = false))
+                toast("Erro: ${t.message ?: "falha"}")
             }
-            settings.setVirtualCameraEnabled(result.isSuccess && enable)
-            _uiState.postValue(_uiState.value?.copy(busy = false))
-            toast(result.exceptionOrNull()?.message ?: if (enable) "Virtual solicitada" else "Desligado")
         }
     }
 
@@ -182,8 +229,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { settings.setOverlayEnabled(enabled) }
     }
 
-    fun switchReal() = controller.switchToRealCamera()
-    fun switchVirtual() = controller.switchToVirtualCamera()
+    fun setAuditLog(text: String) {
+        _uiState.postValue(_uiState.value?.copy(auditLog = text))
+    }
+
+    /** Snapshot: por que a camera do celular nao mostra o video. */
+    fun auditWhyNoPreview(onDone: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                KingVCamLog.auditWhyNoPreview("manual_status_tab")
+            }
+            _uiState.postValue(_uiState.value?.copy(auditLog = KingVCamLog.dump()))
+            onDone?.invoke()
+            toast("Auditoria de preview gravada no log")
+        }
+    }
+
+    fun switchReal() {
+        viewModelScope.launch {
+            runCatching { controller.switchToRealCamera() }
+                .onFailure { toast("Erro REAL: ${it.message}") }
+        }
+    }
+
+    fun switchVirtual() {
+        viewModelScope.launch {
+            runCatching { controller.switchToVirtualCamera() }
+                .onFailure { toast("Erro VIRTUAL: ${it.message}") }
+        }
+    }
 
     private fun toast(message: String) {
         Toast.makeText(getApplication(), message, Toast.LENGTH_SHORT).show()

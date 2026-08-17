@@ -1,33 +1,37 @@
 # VCamGD / KingVCam
 
-Camera virtual **KingEngine** (motor proprio): daemon `kingvd` + hooks soft Zygisk/Pine.
+Camera virtual **v0.11** — motor **B** (o que a internet documenta):
 
-**Alvo:** Android 12–16. Sem LSPosed.
+**Zygisk + Pine hooks no app da Camera** (Camera1/Camera2), igual VCAM/xCam.
+
+Nao depende de inject `libvc` no `cameraserver` para o preview funcionar.
 
 Repositorio: https://github.com/gallzeraadelivery/vcamgd  
 Releases: https://github.com/gallzeraadelivery/vcamgd/releases
 
 ## Instalacao
 
-1. Magisk com **Zygisk ON** + root  
-2. Instalar `vcamgd-app-debug.apk`  
-3. Abrir → conceder root → reboot se pedido (1x)  
-4. Video → ativar virtual → **reabrir** a camera  
+1. Root **Magisk** com **Zygisk ON** (ou KernelSU + ZygiskNext)
+2. Instalar `KingVCam-0.11.0.apk`
+3. Abrir → conceder root permanente
+4. Selecionar video → **ativar virtual**
+5. Na **primeira vez** o app instala o modulo Magisk → **reinicie 1 vez**
+6. Ative de novo → feche Camera Xiaomi (recentes) → abra de novo
+7. Status deve mostrar `feeder=feeding:...` (nao `inject=true`)
 
-Build offline legado (vcplax, 12–13): release **v0.8.1**.
+## Como funciona (v0.11)
 
-## Motor v0.9 (proprio)
+1. Modulo Zygisk injeta `hook.dex` no processo do app Camera
+2. `HookEntry` (hard) troca Surfaces do HAL e toca o mp4 no preview
+3. `control.json` em `/data/local/tmp/vcamgd/` liga/desliga
+4. Video em `/data/local/tmp/vcamgd/current.mp4` (+ espelho `DCIM/Camera1/virtual.mp4`)
 
-1. `kingvd` — daemon nativo (unix socket) escreve `control.json`  
-2. Zygisk injeta `HookEntry` (soft): preview apos sessao Camera  
-3. IPC: `/data/local/tmp/vcamgd/`  
+`vcplax`/`libvc` permanece no APK como motor legado, **nao** e usado no enable.
 
 ## Build
 
 ```bat
-powershell -ExecutionPolicy Bypass -File scripts\build-kingvd.ps1
-powershell -ExecutionPolicy Bypass -File scripts\pack-module.ps1
-gradlew.bat :app:assembleDebug
+gradlew.bat :app:assembleRelease
 ```
 
 ## Uso responsavel

@@ -1,6 +1,6 @@
 id=vcamgd
 name=KingVCam Engine
-version=v0.9.0
-versionCode=13
+version=v0.9.4
+versionCode=15
 author=vcamgd
-description=KingEngine soft inject (kingvd IPC + Zygisk/Pine). Android 12-16. 16KB page.
+description=KingEngine soft/hard inject. Always inject DEX; control.json gates feed. Android 12-16.

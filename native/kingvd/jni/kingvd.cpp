@@ -160,12 +160,48 @@ static void serve_client(int cfd) {
     close(cfd);
 }
 
+/** Cliente oneshot: kingvd -c "PING" (rodar via su). */
+static int run_client(const char* cmd) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        perror("socket");
+        return 2;
+    }
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, kSock, sizeof(addr.sun_path) - 1);
+    if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        perror("connect");
+        close(fd);
+        return 3;
+    }
+    std::string line = cmd;
+    line.push_back('\n');
+    if (write(fd, line.data(), line.size()) < 0) {
+        perror("write");
+        close(fd);
+        return 4;
+    }
+    char buf[512];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n > 0) {
+        buf[n] = 0;
+        fputs(buf, stdout);
+        if (buf[n - 1] != '\n') fputc('\n', stdout);
+        return 0;
+    }
+    return 5;
+}
+
 int main(int argc, char** argv) {
-    (void)argc;
-    (void)argv;
     signal(SIGPIPE, SIG_IGN);
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
+
+    if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
+        return run_client(argv[2]);
+    }
 
     ensure_dirs();
     unlink(kSock);

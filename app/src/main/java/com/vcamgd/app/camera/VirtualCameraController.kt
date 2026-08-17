@@ -2,8 +2,8 @@ package com.vcamgd.app.camera
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import com.vcamgd.app.data.VideoSourceType
+import com.vcamgd.app.util.KingVCamLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,25 +27,54 @@ data class VirtualCameraStatus(
 )
 
 /**
- * Controller v0.9: motor proprio [KingEngine] + hooks soft Zygisk.
+ * Controller motor B: Zygisk + Pine hooks no app Camera (VCAM-like).
+ * vcplax/libvc nao e mais requisito para enable.
  */
 class VirtualCameraController(private val context: Context) {
     private val _status = MutableStateFlow(VirtualCameraStatus())
     val status: StateFlow<VirtualCameraStatus> = _status.asStateFlow()
 
+    init {
+        UniversalEngine.bindContext(context)
+    }
+
     suspend fun refreshModuleStatus() {
-        val alive = withContext(Dispatchers.IO) { KingEngine.isAlive() }
-        val hook = withContext(Dispatchers.IO) { NativeBridge.readModuleStatus() }
+        val installed = withContext(Dispatchers.IO) { AppHookEngine.isModuleLive() }
+        val feeder = withContext(Dispatchers.IO) { AppHookEngine.feederStatus() }
         _status.value = _status.value.copy(
-            moduleInstalled = alive || NativeBridge.isModulePresent(),
-            zygiskEvent = if (alive) "kingvd: ${KingEngine.statusLine()} | $hook" else hook,
+            moduleInstalled = installed,
+            zygiskEvent = feeder,
             message = when {
-                alive && _status.value.state == VirtualCameraState.ENABLED ->
-                    "Virtual ativa (KingEngine)"
-                alive -> "Motor kingvd pronto"
-                else -> "Motor parado — Magisk+Zygisk + root"
+                _status.value.state == VirtualCameraState.ENABLED ->
+                    "Virtual ON (hooks no app). ${shortFeeder(feeder)}"
+                installed -> "Modulo Zygisk pronto — ative a virtual"
+                else -> "Modulo Zygisk ausente — ative a virtual (instala + 1 reboot)"
             },
         )
+    }
+
+    suspend fun resumeVirtualSession(): Result<Unit> {
+        _status.value = _status.value.copy(message = "Retomando hooks no app Camera…")
+        return when (val r = withContext(Dispatchers.IO) { AppHookEngine.resume(context) }) {
+            is AppHookEngine.Result.Ok -> {
+                _status.value = VirtualCameraStatus(
+                    state = VirtualCameraState.ENABLED,
+                    message = "Virtual retomada. Feche Camera Xiaomi (recentes) e abra de novo.",
+                    usingRealCamera = false,
+                    moduleInstalled = true,
+                    zygiskEvent = withContext(Dispatchers.IO) { AppHookEngine.feederStatus() },
+                )
+                Result.success(Unit)
+            }
+            is AppHookEngine.Result.NeedsReboot -> {
+                fail(r.reason)
+                Result.failure(IllegalStateException(r.reason))
+            }
+            is AppHookEngine.Result.Failed -> {
+                fail(r.reason)
+                Result.failure(IllegalStateException(r.reason))
+            }
+        }
     }
 
     suspend fun enable(
@@ -55,87 +84,59 @@ class VirtualCameraController(private val context: Context) {
     ): Result<Unit> {
         _status.value = _status.value.copy(
             state = VirtualCameraState.ENABLING,
-            message = "Iniciando motor KingEngine...",
+            message = "Instalando/ativando hooks no app Camera…",
         )
+        KingVCamLog.i("enable", "hook-path source=$sourceType")
         delay(50)
 
-        val boot = withContext(Dispatchers.IO) { KingEngine.ensureRunning(context) }
-        if (boot is KingEngine.Result.Failed) {
-            if (boot.reason.startsWith("REBOOT_REQUIRED:")) {
-                fail("Reinicie o telefone uma vez (modulo Zygisk instalado)")
-                return Result.failure(IllegalStateException(boot.reason))
-            }
-            fail(boot.reason)
-            return Result.failure(IllegalStateException(boot.reason))
+        val r = withContext(Dispatchers.IO) {
+            AppHookEngine.enable(context, sourceType, localUri, networkUrl)
         }
-
-        val playTarget: String = when (sourceType) {
-            VideoSourceType.LOCAL_FILE -> {
-                if (localUri == null) {
-                    fail("Selecione um arquivo de video")
-                    return Result.failure(IllegalArgumentException("missing local video"))
-                }
-                val staged = withContext(Dispatchers.IO) {
-                    NativeBridge.setLocalVideoSource(context, localUri)
-                }
-                if (!staged) {
-                    fail("Falha ao preparar video (root/storage)")
-                    return Result.failure(IllegalStateException("stage failed"))
-                }
-                "/data/local/tmp/vcamgd/current.mp4"
+        return when (r) {
+            is AppHookEngine.Result.Ok -> {
+                delay(400)
+                val feeder = withContext(Dispatchers.IO) { AppHookEngine.feederStatus() }
+                _status.value = VirtualCameraStatus(
+                    state = VirtualCameraState.ENABLED,
+                    message = "Virtual ON (hooks). Feche Camera Xiaomi (recentes) e abra de novo.",
+                    usingRealCamera = false,
+                    moduleInstalled = true,
+                    zygiskEvent = feeder,
+                )
+                KingVCamLog.i("enable", "OK hook feeder=$feeder")
+                Result.success(Unit)
             }
-            VideoSourceType.NETWORK_STREAM -> {
-                val url = networkUrl.trim()
-                if (url.isBlank()) {
-                    fail("Informe URL RTSP/HTTP")
-                    return Result.failure(IllegalArgumentException("missing url"))
-                }
-                withContext(Dispatchers.IO) { NativeBridge.setNetworkSource(context, url) }
-                url
+            is AppHookEngine.Result.NeedsReboot -> {
+                _status.value = VirtualCameraStatus(
+                    state = VirtualCameraState.ERROR,
+                    message = r.reason,
+                    usingRealCamera = true,
+                    moduleInstalled = true,
+                    zygiskEvent = "needs_reboot",
+                )
+                Result.failure(IllegalStateException(r.reason))
             }
-            VideoSourceType.USB_TRANSFER -> {
-                fail("USB ainda nao suportado no motor proprio")
-                return Result.failure(IllegalStateException("usb unsupported"))
+            is AppHookEngine.Result.Failed -> {
+                fail(r.reason)
+                Result.failure(IllegalStateException(r.reason))
             }
         }
-
-        val play = withContext(Dispatchers.IO) { KingEngine.startPlay(playTarget) }
-        if (play is KingEngine.Result.Failed) {
-            fail(play.reason)
-            return Result.failure(IllegalStateException(play.reason))
-        }
-
-        withContext(Dispatchers.IO) { NativeBridge.restartCameraApps() }
-        _status.value = VirtualCameraStatus(
-            state = VirtualCameraState.ENABLED,
-            message = "Virtual ON (KingEngine). Reabra a camera.",
-            usingRealCamera = false,
-            moduleInstalled = true,
-            zygiskEvent = KingEngine.statusLine(),
-        )
-        Log.i("KingVCam", "enable OK target=$playTarget")
-        return Result.success(Unit)
     }
 
     suspend fun disable(): Result<Unit> {
-        withContext(Dispatchers.IO) {
-            KingEngine.stopPlay()
-            NativeBridge.disable(context)
-            NativeBridge.restartCameraApps()
-        }
+        withContext(Dispatchers.IO) { AppHookEngine.disable(context) }
         _status.value = VirtualCameraStatus(
             state = VirtualCameraState.DISABLED,
             message = "Virtual OFF — camera real",
             usingRealCamera = true,
-            moduleInstalled = KingEngine.isAlive() || NativeBridge.isModulePresent(),
+            moduleInstalled = AppHookEngine.isModuleLive(),
             zygiskEvent = "stopped",
         )
         return Result.success(Unit)
     }
 
-    fun switchToRealCamera() {
-        KingEngine.switchReal()
-        NativeBridge.switchToReal(context)
+    suspend fun switchToRealCamera() {
+        withContext(Dispatchers.IO) { NativeBridge.switchToReal(context) }
         _status.value = _status.value.copy(
             usingRealCamera = true,
             message = "Modo REAL",
@@ -143,14 +144,20 @@ class VirtualCameraController(private val context: Context) {
         )
     }
 
-    fun switchToVirtualCamera() {
-        KingEngine.switchVirtual()
-        NativeBridge.switchToVirtual(context)
+    suspend fun switchToVirtualCamera() {
+        withContext(Dispatchers.IO) {
+            NativeBridge.writeVirtualControl(context, restartApps = true)
+        }
         _status.value = _status.value.copy(
             usingRealCamera = false,
-            message = "Modo VIRTUAL",
+            message = "Modo VIRTUAL (hooks)",
             state = VirtualCameraState.ENABLED,
         )
+    }
+
+    private fun shortFeeder(raw: String): String {
+        val f = Regex("\"feeder\":\"([^\"]+)\"").find(raw)?.groupValues?.getOrNull(1)
+        return f ?: raw.take(80)
     }
 
     private fun fail(message: String) {

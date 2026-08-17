@@ -17,14 +17,14 @@ object EngineFacade {
     private const val TAG = "KingVCam-Engine"
 
     enum class InjectStyle {
-        /** Depois da sessao abrir — nao quebra HAL Moto (padrao OVCAM-like). */
+        /** Nao mexe no HAL — pode perder para a camera real (Moto mais estavel). */
         SOFT,
-        /** Substitui Surfaces do HAL — necessario em alguns apps de capturar frame. */
+        /** Substitui Surfaces do HAL — necessario para substituir de verdade. */
         HARD,
     }
 
     @Volatile
-    var injectStyle: InjectStyle = InjectStyle.SOFT
+    var injectStyle: InjectStyle = InjectStyle.HARD
         private set
 
     fun setInjectStyle(style: InjectStyle) {

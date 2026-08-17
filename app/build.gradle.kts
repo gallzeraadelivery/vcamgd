@@ -12,13 +12,16 @@ android {
         // Android 12 (API 31) ate 16 (API 36)
         minSdk = 31
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.9.0"
+        versionCode = 41
+        versionName = "0.11.0"
     }
 
+    // Sideload/root: release assinado com debug keystore (igual releases 0.9.x).
+    // Sem isso, assembleRelease gera APK unsigned e o Android recusa instalar.
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

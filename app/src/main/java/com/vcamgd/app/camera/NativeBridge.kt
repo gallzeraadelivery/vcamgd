@@ -4,9 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 
 /**
  * IPC primario: /data/local/tmp/vcamgd (legivel pelos apps / hooks Zygisk)
@@ -44,7 +42,7 @@ object NativeBridge {
         "com.huawei.camera",
         "com.oplus.camera",
         "com.oneplus.camera",
-        // Motorola (G60 / family)
+        // Motorola
         "com.motorola.camera",
         "com.motorola.camera2",
         "com.motorola.camera3",
@@ -52,6 +50,26 @@ object NativeBridge {
         "com.motorola.actions",
         "com.sonyericsson.android.camera",
         "com.transsion.camera",
+        // Xiaomi / HyperOS / Redmi Note
+        "com.xiaomi.scanner",
+        "com.mlab.cam",
+        "com.xiaomi.mircs",
+        "com.miui.gallery",
+        "com.xiaomi.camera.videocast",
+        "com.xiaomi.cameratools",
+        // Apps frequentes
+        "com.whatsapp",
+        "com.whatsapp.w4b",
+        "com.instagram.android",
+        "com.facebook.orca",
+        "com.facebook.mlite",
+        "org.telegram.messenger",
+        "com.discord",
+        "com.snapchat.android",
+        "com.google.android.apps.messaging",
+        "com.android.chrome",
+        "com.ss.android.ugc.aweme",
+        "com.zhiliaoapp.musically",
     )
 
     fun isModulePresent(): Boolean =
@@ -63,20 +81,30 @@ object NativeBridge {
     }
 
     /**
+     * Escreve mode=real no control.json sem matar cameras (seguro no arranque).
+     */
+    fun writePassthroughOnly(virtualEnabledInApp: Boolean) {
+        if (virtualEnabledInApp) return
+        runCatching {
+            writeControl(
+                enabled = false,
+                virtual = false,
+                mode = "real",
+                source = "",
+                uri = "",
+                url = "",
+            )
+        }
+    }
+
+    /**
      * Garante pass-through (zero hooks) no arranque se a virtual nao estiver ativa no app.
      * Recupera devices em que control.json ficou preso em mode=virtual.
      */
     fun syncPassthroughUnlessVirtualEnabled(virtualEnabledInApp: Boolean) {
+        writePassthroughOnly(virtualEnabledInApp)
         if (virtualEnabledInApp) return
-        writeControl(
-            enabled = false,
-            virtual = false,
-            mode = "real",
-            source = "",
-            uri = "",
-            url = "",
-        )
-        restartCameraApps()
+        // So reinicia cameras quando o usuario desliga de proposito — nao no boot do app
     }
 
     fun setLocalVideoSource(context: Context, uri: Uri): Boolean {
@@ -94,7 +122,6 @@ object NativeBridge {
             uri = VIDEO_TMP,
             url = "",
         )
-        if (ok) restartCameraApps()
         return ok
     }
 
@@ -113,7 +140,6 @@ object NativeBridge {
             uri = "",
             url = normalized,
         )
-        if (ok) restartCameraApps()
         return ok
     }
 
@@ -179,42 +205,67 @@ object NativeBridge {
     }
 
     fun switchToVirtual(context: Context) {
+        writeVirtualControl(context, restartApps = true)
+    }
+
+    /**
+     * Escreve control.json virtual+hard.
+     * @param restartApps force-stop apps Camera (necessario para Zygisk injetar no proximo start).
+     */
+    fun writeVirtualControl(
+        context: Context,
+        source: String? = null,
+        uri: String? = null,
+        url: String? = null,
+        restartApps: Boolean = false,
+    ): Boolean {
         val prefs = context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
-        val source = prefs.getString("source", "local").orEmpty()
-        val uri = prefs.getString("uri", "").orEmpty()
-        val url = prefs.getString("url", "").orEmpty()
+        val src = source ?: prefs.getString("source", "local").orEmpty()
+        val u = uri ?: prefs.getString("uri", "").orEmpty()
+        val n = url ?: prefs.getString("url", "").orEmpty()
         prefs.edit()
             .putBoolean("virtual", true)
             .putBoolean("enabled", true)
             .putString("mode", "virtual")
+            .putString("source", src.ifBlank { "local" })
             .apply()
         val ok = writeControl(
             enabled = true,
             virtual = true,
             mode = "virtual",
-            source = source.ifBlank { "local" },
-            uri = if (source == "local" || source.isBlank()) VIDEO_TMP else uri,
-            url = url,
+            source = src.ifBlank { "local" },
+            uri = if (src == "local" || src.isBlank()) VIDEO_TMP else u,
+            url = n,
         )
-        if (ok) restartCameraApps()
+        if (ok && restartApps) restartCameraApps()
+        return ok
     }
 
     /**
-     * Force-stop apps de camera + reinicia HAL (recupera Motorola 03400001).
+     * Force-stop so apps de camera do OEM.
+     * HyperOS: lista enxuta — force-stop em massa derruba a sessao Camera2
+     * ("Nao e possivel conectar-se a camera").
      */
     fun restartCameraApps() {
-        val cmds = CAMERA_PACKAGES.joinToString("; ") { "am force-stop $it 2>/dev/null" }
-        val script =
-            "$cmds; " +
-                "for p in \$(dumpsys media.camera 2>/dev/null | grep -oE 'com\\.[a-zA-Z0-9_.]+' | sort -u); do " +
-                "am force-stop \"\$p\" 2>/dev/null; done; " +
-                "killall cameraserver 2>/dev/null; " +
-                "killall android.hardware.camera.provider@2.4-service 2>/dev/null; " +
-                "killall android.hardware.camera.provider@2.4-service_64 2>/dev/null; " +
-                "killall vendor.qti.camera.provider@2.4-service_64 2>/dev/null; " +
-                "killall vendor.qti.camera.provider-service_64 2>/dev/null; " +
-                "echo OK"
-        val out = shellSu(script)
+        val pkgs = if (
+            android.os.Build.MANUFACTURER.contains("xiaomi", true) ||
+            android.os.Build.BRAND.contains("redmi", true) ||
+            android.os.Build.BRAND.contains("poco", true) ||
+            android.os.Build.BRAND.contains("xiaomi", true)
+        ) {
+            listOf(
+                "com.android.camera",
+                "com.android.camera2",
+                "com.miui.camera",
+                "com.xiaomi.camera",
+                "com.mlab.cam",
+                "com.android.mmc",
+            )
+        } else {
+            CAMERA_PACKAGES
+        }
+        val cmds = pkgs.joinToString("; ") { "am force-stop $it 2>/dev/null" }
+        val out = shellSu("$cmds; echo OK")
         Log.i(TAG, "restartCameraApps: ${out.take(200)}")
     }
 
@@ -228,8 +279,14 @@ object NativeBridge {
                 "mkdir -p '$TMP_DIR' '$ADB_DIR'; " +
                     "cp '${cache.absolutePath}' '$VIDEO_TMP'; " +
                     "cp '${cache.absolutePath}' '$VIDEO_ADB'; " +
-                    "chmod 777 '$TMP_DIR'; chmod 666 '$VIDEO_TMP' '$VIDEO_ADB'; " +
-                    "ls -l '$VIDEO_TMP'; echo OK"
+                    "chmod 777 '$TMP_DIR' '$ADB_DIR'; " +
+                    "chmod 666 '$VIDEO_TMP' '$VIDEO_ADB'; " +
+                    "chown root:root '$VIDEO_TMP' '$VIDEO_ADB' 2>/dev/null; " +
+                    // SELinux: apps de camera precisam ler o mp4
+                    "chcon u:object_r:magisk_file:s0 '$TMP_DIR' '$VIDEO_TMP' 2>/dev/null; " +
+                    "chcon u:object_r:system_data_file:s0 '$VIDEO_TMP' 2>/dev/null; " +
+                    "restorecon -F '$TMP_DIR' '$VIDEO_TMP' 2>/dev/null; " +
+                    "ls -lZ '$VIDEO_TMP'; echo OK"
             val ok = shellSu(script).contains("OK")
             Log.i(TAG, "stageLocalVideo size=${cache.length()} ok=$ok")
             ok
@@ -282,11 +339,13 @@ object NativeBridge {
     private fun writeControlFiles(json: String): Boolean {
         val escaped = json.replace("'", "'\\''")
         val script =
-            "mkdir -p '$TMP_DIR' '$ADB_DIR'; " +
+            "mkdir -p '$TMP_DIR' '$ADB_DIR' /dev/vcam; " +
                 "printf '%s' '$escaped' > '$CONTROL_TMP'; " +
                 "printf '%s' '$escaped' > '$CONTROL_ADB'; " +
-                "chmod 777 '$TMP_DIR'; chmod 666 '$CONTROL_TMP' '$CONTROL_ADB' " +
+                "printf '%s' '$escaped' > /dev/vcam/control.json; " +
+                "chmod 777 '$TMP_DIR' /dev/vcam; chmod 666 '$CONTROL_TMP' '$CONTROL_ADB' /dev/vcam/control.json " +
                 "'$STATUS_TMP' '$STATUS_ADB' 2>/dev/null; " +
+                "chcon u:object_r:system_lib_file:s0 /dev/vcam/control.json 2>/dev/null; " +
                 "echo OK"
         return shellSu(script).contains("OK")
     }
@@ -304,16 +363,6 @@ object NativeBridge {
         return out.ifBlank { null }
     }
 
-    private fun shellSu(command: String): String {
-        return try {
-            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-            val stdout = BufferedReader(InputStreamReader(process.inputStream)).readText()
-            val stderr = BufferedReader(InputStreamReader(process.errorStream)).readText()
-            process.waitFor()
-            (stdout + stderr).trim()
-        } catch (e: Exception) {
-            Log.w(TAG, "su failed: ${e.message}")
-            ""
-        }
-    }
+    private fun shellSu(command: String): String =
+        com.vcamgd.app.root.RootShell.run(command, timeoutSec = 8)
 }
