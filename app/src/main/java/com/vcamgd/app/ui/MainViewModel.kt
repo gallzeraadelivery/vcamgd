@@ -12,6 +12,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import com.vcamgd.app.VCamApp
+import com.vcamgd.app.camera.AppHookEngine
 import com.vcamgd.app.camera.UniversalEngine
 import com.vcamgd.app.camera.VirtualCameraController
 import com.vcamgd.app.camera.VirtualCameraStatus
@@ -88,33 +89,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Prepara motor universal (12–16). Sem reboot de modulo. */
+    /** Prepara modulo Zygisk (hooks no app). Pode pedir 1 reboot. */
     fun warmEngine() {
         viewModelScope.launch {
             _uiState.postValue(
-                _uiState.value?.copy(busy = true, moduleMessage = "Preparando motor 12–16..."),
+                _uiState.value?.copy(busy = true, moduleMessage = "Preparando modulo Zygisk…"),
             )
             val result = withContext(Dispatchers.IO) {
-                runCatching { UniversalEngine.ensureRunning(getApplication()) }
-                    .getOrElse { UniversalEngine.Result.Failed(it.message ?: "erro") }
+                runCatching { AppHookEngine.ensureReady(getApplication()) }
+                    .getOrElse { AppHookEngine.Result.Failed(it.message ?: "erro") }
             }
             when (result) {
-                is UniversalEngine.Result.Ok -> {
+                is AppHookEngine.Result.Ok -> {
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
                             needsReboot = false,
-                            moduleMessage = "Motor OK: ${UniversalEngine.statusLine(getApplication())}",
+                            moduleMessage = "Hooks prontos: ${AppHookEngine.feederStatus()}",
                         ),
                     )
                     runCatching { controller.refreshModuleStatus() }
                 }
-                is UniversalEngine.Result.Failed -> {
+                is AppHookEngine.Result.NeedsReboot -> {
+                    _uiState.postValue(
+                        _uiState.value?.copy(
+                            busy = false,
+                            needsReboot = true,
+                            moduleMessage = result.reason,
+                        ),
+                    )
+                    toast(result.reason)
+                }
+                is AppHookEngine.Result.Failed -> {
                     _uiState.postValue(
                         _uiState.value?.copy(
                             busy = false,
                             needsReboot = false,
-                            moduleMessage = "Motor: ${result.reason}",
+                            moduleMessage = "Modulo: ${result.reason}",
                         ),
                     )
                 }
@@ -156,11 +167,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 if (enable) {
                     val boot = withContext(Dispatchers.IO) {
-                        UniversalEngine.ensureRunning(getApplication())
+                        AppHookEngine.ensureReady(getApplication())
                     }
-                    if (boot is UniversalEngine.Result.Failed) {
+                    if (boot is AppHookEngine.Result.NeedsReboot) {
+                        _uiState.postValue(
+                            _uiState.value?.copy(busy = false, needsReboot = true, moduleMessage = boot.reason),
+                        )
+                        toast(boot.reason)
+                        return@launch
+                    }
+                    if (boot is AppHookEngine.Result.Failed) {
                         _uiState.postValue(_uiState.value?.copy(busy = false))
-                        toast("Root/motor: ${boot.reason}")
+                        toast("Modulo Zygisk: ${boot.reason}")
                         return@launch
                     }
                 }
@@ -175,8 +193,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     controller.disable()
                 }
                 settings.setVirtualCameraEnabled(result.isSuccess && enable)
-                _uiState.postValue(_uiState.value?.copy(busy = false, needsReboot = false))
-                toast(result.exceptionOrNull()?.message ?: if (enable) "Virtual solicitada" else "Desligado")
+                val reboot = result.exceptionOrNull()?.message?.contains("Reinicie", ignoreCase = true) == true
+                _uiState.postValue(
+                    _uiState.value?.copy(busy = false, needsReboot = reboot),
+                )
+                toast(result.exceptionOrNull()?.message ?: if (enable) "Virtual ON — feche e abra a Camera" else "Desligado")
             }.onFailure { t ->
                 Log.e("KingVCam", "toggleVirtualCamera", t)
                 _uiState.postValue(_uiState.value?.copy(busy = false))

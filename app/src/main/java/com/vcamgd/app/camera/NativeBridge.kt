@@ -119,10 +119,9 @@ object NativeBridge {
             virtual = true,
             mode = "virtual",
             source = "local",
-            uri = "/dev/vcam/current.mp4",
+            uri = VIDEO_TMP,
             url = "",
         )
-        // Restart so no VirtualCameraController — evita double-kill cedo demais
         return ok
     }
 
@@ -206,24 +205,40 @@ object NativeBridge {
     }
 
     fun switchToVirtual(context: Context) {
+        writeVirtualControl(context, restartApps = true)
+    }
+
+    /**
+     * Escreve control.json virtual+hard.
+     * @param restartApps force-stop apps Camera (necessario para Zygisk injetar no proximo start).
+     */
+    fun writeVirtualControl(
+        context: Context,
+        source: String? = null,
+        uri: String? = null,
+        url: String? = null,
+        restartApps: Boolean = false,
+    ): Boolean {
         val prefs = context.getSharedPreferences("vcam_runtime", Context.MODE_PRIVATE)
-        val source = prefs.getString("source", "local").orEmpty()
-        val uri = prefs.getString("uri", "").orEmpty()
-        val url = prefs.getString("url", "").orEmpty()
+        val src = source ?: prefs.getString("source", "local").orEmpty()
+        val u = uri ?: prefs.getString("uri", "").orEmpty()
+        val n = url ?: prefs.getString("url", "").orEmpty()
         prefs.edit()
             .putBoolean("virtual", true)
             .putBoolean("enabled", true)
             .putString("mode", "virtual")
+            .putString("source", src.ifBlank { "local" })
             .apply()
         val ok = writeControl(
             enabled = true,
             virtual = true,
             mode = "virtual",
-            source = source.ifBlank { "local" },
-            uri = if (source == "local" || source.isBlank()) VIDEO_TMP else uri,
-            url = url,
+            source = src.ifBlank { "local" },
+            uri = if (src == "local" || src.isBlank()) VIDEO_TMP else u,
+            url = n,
         )
-        if (ok) restartCameraApps()
+        if (ok && restartApps) restartCameraApps()
+        return ok
     }
 
     /**

@@ -340,6 +340,15 @@ public final class HookEntry {
         if (f.exists() && f.length() > 0) return f.getAbsolutePath();
         f = new File(LEGACY_VIDEO);
         if (f.exists() && f.length() > 0) return f.getAbsolutePath();
+        String[] vcam = {
+                "/sdcard/DCIM/Camera1/virtual.mp4",
+                "/storage/emulated/0/DCIM/Camera1/virtual.mp4",
+                "/sdcard/Android/data/com.android.camera/files/Camera1/virtual.mp4",
+        };
+        for (String p : vcam) {
+            File vf = new File(p);
+            if (vf.exists() && vf.length() > 0) return vf.getAbsolutePath();
+        }
         String uri = json.optString("uri", "");
         if (uri.startsWith("/")) {
             File d = new File(uri);

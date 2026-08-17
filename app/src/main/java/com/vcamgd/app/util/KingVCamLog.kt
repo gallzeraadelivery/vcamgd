@@ -85,6 +85,9 @@ object KingVCamLog {
                 "echo ki=\$(tail -n 8 /data/local/tmp/vcamgd/kinginject.log 2>/dev/null | tr '\\n' ';'); " +
                 "echo vx=\$(tail -n 6 /data/local/tmp/vcamgd/vcplax.log 2>/dev/null | tr '\\n' ';'); " +
                 "echo cam_apps=\$(pidof com.android.camera com.android.camera2 com.miui.camera 2>/dev/null | tr ' ' ','); " +
+                "echo control=\$(cat /data/local/tmp/vcamgd/control.json 2>/dev/null | tr '\\n' ' '); " +
+                "echo feeder=\$(cat /data/local/tmp/vcamgd/status.json 2>/dev/null | tr '\\n' ' '); " +
+                "echo zygisk_mod=\$(test -f /data/adb/modules/vcamgd/zygisk/arm64-v8a.so && echo YES || echo NO); " +
                 "echo EXTRA=$extra; " +
                 "echo === END ===",
             timeoutSec = 14,
@@ -121,14 +124,23 @@ object KingVCamLog {
         val vcplaxLine = snap.lineSequence().firstOrNull { it.startsWith("vcplax=") }.orEmpty()
         val vcplaxDead = !Regex("""\d""").containsMatchIn(vcplaxLine)
 
+        val feeder = snap.lineSequence().firstOrNull { it.startsWith("feeder=") }.orEmpty()
+        val zygiskNo = snap.contains("zygisk_mod=NO")
+        val controlOff = snap.contains("\"enabled\":false") || snap.contains("\"mode\":\"real\"")
+
         when {
+            zygiskNo -> h.add("modulo Zygisk ausente — ative a virtual 1 vez e reinicie o celular")
+            controlOff -> h.add("control.json nao esta em mode=virtual — ative de novo no app")
+            feeder.contains("feeding") -> h.add("hook JA esta alimentando Surface — se preview real, o app Camera nao usa Camera2 padrao")
+            feeder.contains("hooks_ready") || feeder.contains("zygisk_hooks") ->
+                h.add("hooks instalados mas ainda nao feeding — feche Camera (recentes) e abra de novo")
             camDead -> h.add("cameraserver morto — inject/play invalidos; reative a virtual")
             mapsEmpty -> h.add("libvc NAO esta no maps do cameraserver (inject=false) — preview sempre sera camera real")
             !hasVideo || missingVideo -> h.add("arquivo de video ausente/pequeno — stage falhou; selecione o video de novo")
             vcplaxDead -> h.add("vcplax morto — binder play nao alimenta o libvc mesmo com inject=true")
             else -> {
-                h.add("inject+video+vcplax aparentam OK — (1) feche camera 3s e reabra; (2) se maps tem (deleted), libs foram sobrescritas — reinstale 0.10.14+; (3) play deve usar /dev/vcam/current.mp4")
-                h.add("HyperOS: nao force-stop apos inject; SELinux deve ficar Permissive na sessao")
+                h.add("Feche Camera Xiaomi (recentes) e abra de novo — Zygisk so injeta no start do processo")
+                h.add("Status deve mostrar feeder=feeding:... se o hook pegou o preview")
             }
         }
         if (snap.contains("(deleted)")) {

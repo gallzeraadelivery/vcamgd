@@ -47,9 +47,9 @@ class StatusFragment : Fragment() {
         vm.uiState.observe(viewLifecycleOwner) { state ->
             binding.rootStatus.text = "Root\n${state.root.detail}"
             binding.moduleStatus.text = "Motor\n" + if (state.camera.moduleInstalled) {
-                "vcplax (APK+root, sem Zygisk) API ${android.os.Build.VERSION.SDK_INT}"
+                "Zygisk hooks (app Camera) API ${android.os.Build.VERSION.SDK_INT}"
             } else {
-                "parado — root + ativar"
+                "modulo ausente — ative a virtual (1 reboot)"
             }
             binding.cameraStatus.text = "Camera virtual\n${state.camera.message}"
             binding.activationStatus.text = "Evento\n" + state.camera.zygiskEvent.ifBlank {
